@@ -1,18 +1,36 @@
 #!/bin/bash
+# Creates a symbolic link to this directory in the Syntalos modules directory.
+# This allows Syntalos to find the module while being able to modify the module
+# code without reinstalling it.
+
 if [ "$(uname)" != "Linux" ]; then
     echo "Script intended for Linux!"
     exit 1
 fi
 
-# Create a symbolic link to this directory in the Syntalos modules directory.
+if [ ! -f "module.toml" ]; then
+    echo "Run this script from the module directory!"
+    exit 1
+fi
+
 SHIMMER_MODULE_SRC="$(pwd)/"
 
-# When installed from Flatpak
-# SYNTALOS_MODULES_DIR="$HOME/.var/app/org.syntalos.syntalos/data/modules"
-# When built and installed from source
-SYNTALOS_MODULES_DIR="$HOME/.local/share/Syntalos/modules"
+# Check if flatpak is installed and if Syntalos is installed and choose the correct path
+if command -v flatpak &> /dev/null && flatpak list | grep -q org.syntalos.syntalos; then
+    SYNTALOS_MODULES_DIR="$HOME/.var/app/org.syntalos.syntalos/data/modules"
+else
+    SYNTALOS_MODULES_DIR="$HOME/.local/share/Syntalos/modules"
+fi
 
 mkdir -p $SYNTALOS_MODULES_DIR
-SYMLINK="$SYNTALOS_MODULES_DIR/pupil_labs_neon"
+SYMLINK="$SYNTALOS_MODULES_DIR/pl_neon"
+
+# The syntax of `ln` is ambiguous when the target already exists.
+# If we don't remove the existing symlink, `ln` will create a symlink in the
+# current directory
+if [ -L "$SYMLINK" ]; then
+    echo "Symlink already exists, removing it..."
+    rm "$SYMLINK"
+fi
 
 ln --verbose -s $SHIMMER_MODULE_SRC $SYMLINK

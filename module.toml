@@ -1,0 +1,80 @@
+[syntalos_module]
+type = "python"
+
+name = "Pupil Labs Neon"
+description = "Streams data from Pupil Labs Neon glasses."
+icon = "neon.svg"
+
+main = "mod-main.py"
+# will run the module in a dedicated venv with requirements.txt installed
+use_venv = true
+
+# By default development modules don't show up in Syntalos
+# unless you activate the developer mode.
+devel = false
+
+# This will put it inside the "Device Support" group in the "Add Module" GUI
+categories = 'device'
+features = ['show-settings']
+
+[ports]
+
+# Scene camera video stream
+[[ports.out]]
+data_type = 'Frame'
+id = 'scene_video'
+title = 'Scene Video'
+
+# Basic gaze position (x, y)
+[[ports.out]]
+data_type = 'FloatSignalBlock'
+id = 'gaze'
+title = 'Gaze Position'
+
+# Gaze worn status (whether glasses are being worn)
+[[ports.out]]
+data_type = 'IntSignalBlock'
+id = 'worn'
+title = 'Worn Status'
+
+# Pupil diameter (left and right)
+[[ports.out]]
+data_type = 'FloatSignalBlock'
+id = 'pupil_diameter'
+title = 'Pupil Diameter'
+
+# Eyeball center coordinates (left: x,y,z; right: x,y,z)
+[[ports.out]]
+data_type = 'FloatSignalBlock'
+id = 'eyeball_center'
+title = 'Eyeball Center'
+
+# Optical axis coordinates (left: x,y,z; right: x,y,z)
+[[ports.out]]
+data_type = 'FloatSignalBlock'
+id = 'optical_axis'
+title = 'Optical Axis'
+
+# Eyelid data (angles and aperture for both eyes)
+[[ports.out]]
+data_type = 'FloatSignalBlock'
+id = 'eyelid'
+title = 'Eyelid Data'
+
+# Blink events
+[[ports.out]]
+data_type = 'IntSignalBlock'
+id = 'blinks'
+title = 'Blink Events'
+
+# Fixation events
+[[ports.out]]
+data_type = 'FloatSignalBlock'
+id = 'fixations'
+title = 'Fixation Events'
+
+# Saccade events
+[[ports.out]]
+data_type = 'FloatSignalBlock'
+id = 'saccades'
+title = 'Saccade Events'

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Pupil Labs Neon Syntalos Module
 
@@ -44,6 +43,7 @@ from pupil_labs.realtime_api.streaming import (
 
 # Scene video port
 out_scene_video = syl.get_output_port("scene_video")
+out_scene_video.set_metadata_value("framerate", 30.0)
 
 # Gaze position port (x, y coordinates)
 out_gaze = syl.get_output_port("gaze")

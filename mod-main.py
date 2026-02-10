@@ -430,6 +430,20 @@ async def run_async_streams(
             pass
 
 
+async def detect_scene_frame_size(video_url: str, timeout_sec: float = 5.0) -> tuple[int, int] | None:
+    """Probe one video frame and return (width, height)."""
+
+    async def get_one_frame_size() -> tuple[int, int] | None:
+        async for frame in receive_video_frames(video_url, run_loop=False):
+            bgr_buffer = frame.bgr_buffer()
+            if bgr_buffer.ndim < 2:
+                return None
+            return int(bgr_buffer.shape[1]), int(bgr_buffer.shape[0])
+        return None
+
+    return await asyncio.wait_for(get_one_frame_size(), timeout=timeout_sec)
+
+
 def run_event_loop(gaze_url: str | None, video_url: str | None, eye_events_url: str | None) -> None:
     """Run the async event loop in a separate thread."""
     STATE.loop = asyncio.new_event_loop()
@@ -518,7 +532,7 @@ def prepare() -> bool:
         log(f"Found device: {STATE.device_info.name}")
 
         # Connect to device temporarily to get sensor URLs
-        async def get_sensor_urls() -> tuple[str | None, str | None, str | None]:
+        async def get_sensor_urls() -> tuple[str | None, str | None, str | None, tuple[int, int] | None]:
             async with Device.from_discovered_device(STATE.device_info) as device:
                 status = await device.get_status()
 
@@ -530,9 +544,24 @@ def prepare() -> bool:
                 video_url = world_sensor.url if world_sensor.connected else None
                 eye_events_url = eye_events_sensor.url if eye_events_sensor.connected else None
 
-                return gaze_url, video_url, eye_events_url
+                scene_size = None
+                if video_url:
+                    try:
+                        scene_size = await detect_scene_frame_size(video_url)
+                    except Exception as e:
+                        log(f"WARNING: Failed to detect scene frame size: {e}")
 
-        gaze_url, video_url, eye_events_url = asyncio.run(get_sensor_urls())
+                return gaze_url, video_url, eye_events_url, scene_size
+
+        gaze_url, video_url, eye_events_url, scene_size = asyncio.run(get_sensor_urls())
+
+        if scene_size:
+            out_scene_video.set_metadata_value_size("size", [scene_size[0], scene_size[1]])
+            log(f"Scene camera size: {scene_size[0]}x{scene_size[1]}")
+        else:
+            # Fallback to Neon default scene-camera resolution.
+            out_scene_video.set_metadata_value_size("size", [1600, 1200])
+            log("WARNING: Using fallback scene size 1600x1200")
 
         if not gaze_url:
             log("WARNING: Gaze sensor not connected")

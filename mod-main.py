@@ -48,16 +48,6 @@ def deserialise_settings(settings: bytes) -> Settings:
     return Settings(**json.loads(settings.decode()))  # pyright: ignore[reportAny]
 
 
-def stop_previous_recording(device: Device) -> None:
-    try:
-        device.recording_stop_and_save()
-        syl.println("Stopped and saved previous Companion recording before module start")
-    except DeviceError as exc:
-        # Expected if no recording is running
-        if exc.args[0] != 400 and "not running" not in str(exc).lower():
-            raise
-
-
 def connect_device() -> Device:
     settings = STATE.settings
     assert settings is not None
@@ -132,13 +122,12 @@ def prepare() -> bool:
         device = connect_device()
         STATE.device = device
         if STATE.settings.companion_recording_enabled:
-            stop_previous_recording(device)
             _recording_id = device.recording_start()
         return True
     except Exception as exc:
         syl.println(f"Neon prepare failed: {exc}")
         cleanup()
-        return False
+        raise
 
 
 def start() -> None:

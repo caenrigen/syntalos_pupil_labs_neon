@@ -118,9 +118,8 @@ out_scene.set_metadata_value_size("size", [1600, 1200])
 
 
 def prepare() -> bool:
-    if STATE.settings is None:
-        STATE.settings = Settings()
     clear_state()
+    assert STATE.settings is not None
 
     try:
         device = connect_device()
@@ -164,7 +163,7 @@ def run() -> None:
             )
             if scene_frame is not None:
                 submit_scene_frame(scene_frame)
-            syl.wait(5)
+            syl.wait(1)
     finally:
         cleanup()
 
@@ -186,10 +185,11 @@ def set_settings(settings: bytes) -> None:
 
 
 def show_settings(settings: bytes) -> None:
-    if settings:
+    if not settings:
+        if STATE.settings is None:
+            STATE.settings = Settings()
+    else:
         STATE.settings = deserialise_settings(settings)
-    elif STATE.settings is None:
-        STATE.settings = Settings()
 
     assert STATE.settings is not None
 

@@ -34,6 +34,14 @@ class State:
     first_device_ts_us: int | None = None
 
 
+def clear_state() -> None:
+    # Settings should stay persistent across runs
+    STATE.device = None
+    STATE.stop_requested = False
+    STATE.frame_index = 0
+    STATE.first_device_ts_us = None
+
+
 STATE = State()
 
 STREAM_NAME_WORLD = "world"
@@ -79,10 +87,13 @@ def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
 
 
 def cleanup() -> None:
-    device = STATE.device
     settings = STATE.settings
-    assert device is not None
     assert settings is not None
+
+    device = STATE.device
+
+    if device is None:
+        return
 
     if settings.companion_recording_enabled:
         try:
@@ -94,11 +105,6 @@ def cleanup() -> None:
         device.close()
     except Exception as exc:
         syl.println(f"Failed to close Neon device: {exc}")
-
-    STATE.device = None
-    STATE.stop_requested = False
-    STATE.frame_index = 0
-    STATE.first_device_ts_us = None
 
 
 # ## ###############################################################################################
@@ -114,10 +120,8 @@ out_scene.set_metadata_value_size("size", [1600, 1200])
 def prepare() -> bool:
     if STATE.settings is None:
         STATE.settings = Settings()
+    clear_state()
 
-    STATE.stop_requested = False
-    STATE.frame_index = 0
-    STATE.first_device_ts_us = None
     try:
         device = connect_device()
         STATE.device = device

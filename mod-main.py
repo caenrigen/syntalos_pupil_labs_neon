@@ -5,6 +5,8 @@ import json
 from dataclasses import asdict, dataclass
 
 import syntalos_mlink as syl
+
+from pupil_labs.realtime_api.device import DeviceError
 from pupil_labs.realtime_api.simple import (
     Device,
     SimpleVideoFrame,
@@ -20,6 +22,7 @@ class Settings:
     phone_port: int = 8080
     discovery_timeout_s: float = 10.0
     frame_wait_timeout_s: float = 0.2
+    companion_recording_enabled: bool = True
 
 
 @dataclass
@@ -43,6 +46,16 @@ def serialise_settings(settings: Settings) -> bytes:
 
 def deserialise_settings(settings: bytes) -> Settings:
     return Settings(**json.loads(settings.decode()))  # pyright: ignore[reportAny]
+
+
+def stop_previous_recording(device: Device) -> None:
+    try:
+        device.recording_stop_and_save()
+        syl.println("Stopped and saved previous Companion recording before module start")
+    except DeviceError as exc:
+        # Expected if no recording is running
+        if exc.args[0] != 400 and "not running" not in str(exc).lower():
+            raise
 
 
 def connect_device() -> Device:
@@ -76,13 +89,23 @@ def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
 
 
 def cleanup() -> None:
-    if STATE.device is not None:
-        try:
-            STATE.device.close()
-        except Exception as exc:
-            syl.println(f"Failed to close Neon device: {exc}")
-    STATE.device = None
+    device = STATE.device
+    settings = STATE.settings
+    assert device is not None
+    assert settings is not None
 
+    if settings.companion_recording_enabled:
+        try:
+            device.recording_stop_and_save()
+        except Exception as exc:
+            syl.println(f"Neon cleanup recording control failed: {exc}")
+
+    try:
+        device.close()
+    except Exception as exc:
+        syl.println(f"Failed to close Neon device: {exc}")
+
+    STATE.device = None
     STATE.stop_requested = False
     STATE.frame_index = 0
     STATE.first_device_ts_us = None
@@ -102,11 +125,15 @@ def prepare() -> bool:
     if STATE.settings is None:
         STATE.settings = Settings()
 
+    STATE.stop_requested = False
+    STATE.frame_index = 0
+    STATE.first_device_ts_us = None
     try:
-        STATE.device = connect_device()
-        STATE.stop_requested = False
-        STATE.frame_index = 0
-        STATE.first_device_ts_us = None
+        device = connect_device()
+        STATE.device = device
+        if STATE.settings.companion_recording_enabled:
+            stop_previous_recording(device)
+            _recording_id = device.recording_start()
         return True
     except Exception as exc:
         syl.println(f"Neon prepare failed: {exc}")
@@ -115,11 +142,20 @@ def prepare() -> bool:
 
 
 def start() -> None:
-    assert STATE.device is not None
+    device = STATE.device
+    settings = STATE.settings
+    assert device is not None
+    assert settings is not None
+
     try:
-        STATE.device.streaming_start(STREAM_NAME_WORLD)
+        device.streaming_start(STREAM_NAME_WORLD)
     except Exception as exc:
-        syl.println(f"Neon stream start warning: {exc}")
+        syl.println(f"Neon start failed: {exc}")
+        try:
+            cleanup()
+        except Exception as cleanup_exc:
+            syl.println(f"Neon start cleanup failed: {cleanup_exc}")
+        raise
 
 
 def run() -> None:
@@ -135,7 +171,7 @@ def run() -> None:
             )
             if scene_frame is not None:
                 submit_scene_frame(scene_frame)
-            syl.wait(1)
+            syl.wait(5)
     finally:
         cleanup()
 
@@ -169,12 +205,14 @@ def show_settings(settings: bytes) -> None:
     dialog.phonePortSpinBox.setValue(STATE.settings.phone_port)
     dialog.discoveryTimeoutSpinBox.setValue(STATE.settings.discovery_timeout_s)
     dialog.frameWaitTimeoutSpinBox.setValue(STATE.settings.frame_wait_timeout_s)
+    dialog.companionRecordingCheckBox.setChecked(STATE.settings.companion_recording_enabled)
 
     if dialog.exec() == QDialog.DialogCode.Accepted:
         STATE.settings.phone_ip = dialog.phoneIpLineEdit.text().strip()
         STATE.settings.phone_port = dialog.phonePortSpinBox.value()
         STATE.settings.discovery_timeout_s = dialog.discoveryTimeoutSpinBox.value()
         STATE.settings.frame_wait_timeout_s = dialog.frameWaitTimeoutSpinBox.value()
+        STATE.settings.companion_recording_enabled = dialog.companionRecordingCheckBox.isChecked()
         syl.save_settings(serialise_settings(STATE.settings))
 
 

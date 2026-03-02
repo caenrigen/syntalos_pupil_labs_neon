@@ -1,10 +1,15 @@
 """Pupil Labs Neon Syntalos Module."""
 
-from dataclasses import asdict, dataclass
+from datetime import timedelta
 import json
+from dataclasses import asdict, dataclass
 
 import syntalos_mlink as syl
-from pupil_labs.realtime_api.simple import Device, discover_one_device
+from pupil_labs.realtime_api.simple import (
+    Device,
+    SimpleVideoFrame,
+    discover_one_device,
+)
 from PyQt6 import uic
 from PyQt6.QtWidgets import QDialog
 
@@ -24,7 +29,6 @@ class State:
     device: Device | None = None
     frame_index: int = 0
     first_device_ts_us: int | None = None
-    first_master_ts_us: int | None = None
 
 
 STATE = State()
@@ -55,20 +59,17 @@ def connect_device() -> Device:
     return device
 
 
-def submit_scene_frame(scene_frame) -> None:
-    dev_us = int(scene_frame.timestamp_unix_seconds * 1_000_000)
+def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
+    dev_us = int(scene_frame.timestamp_unix_seconds * 1e6)
 
     if STATE.first_device_ts_us is None:
         STATE.first_device_ts_us = dev_us
-        STATE.first_master_ts_us = int(syl.time_since_start_usec())
-
-    assert STATE.first_device_ts_us is not None
-    assert STATE.first_master_ts_us is not None
 
     frame = syl.Frame()
-    frame.mat = scene_frame.bgr_pixels
+    frame.mat = scene_frame.bgr_pixels  # already a numpy array
+    frame.time_usec = timedelta(microseconds=dev_us - STATE.first_device_ts_us)
     frame.index = STATE.frame_index
-    frame.time_usec = STATE.first_master_ts_us + (dev_us - STATE.first_device_ts_us)
+
     STATE.frame_index += 1
 
     out_scene.submit(frame)
@@ -85,7 +86,6 @@ def cleanup() -> None:
     STATE.stop_requested = False
     STATE.frame_index = 0
     STATE.first_device_ts_us = None
-    STATE.first_master_ts_us = None
 
 
 # ## ###############################################################################################
@@ -107,7 +107,6 @@ def prepare() -> bool:
         STATE.stop_requested = False
         STATE.frame_index = 0
         STATE.first_device_ts_us = None
-        STATE.first_master_ts_us = None
         return True
     except Exception as exc:
         syl.println(f"Neon prepare failed: {exc}")

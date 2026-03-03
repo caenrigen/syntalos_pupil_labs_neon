@@ -124,8 +124,6 @@ def prepare() -> bool:
     try:
         device = connect_device()
         STATE.device = device
-        if STATE.settings.companion_recording_enabled:
-            _recording_id = device.recording_start()
         return True
     except Exception as exc:
         syl.println(f"Neon prepare failed: {exc}")
@@ -141,6 +139,8 @@ def start() -> None:
 
     try:
         device.streaming_start(STREAM_NAME_WORLD)
+        if settings.companion_recording_enabled:
+            _recording_id = device.recording_start()
     except Exception as exc:
         syl.println(f"Neon start failed: {exc}")
         try:

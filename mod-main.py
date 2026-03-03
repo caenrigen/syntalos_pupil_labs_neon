@@ -106,6 +106,9 @@ def cleanup() -> None:
     except Exception as exc:
         syl.println(f"Failed to close Neon device: {exc}")
 
+    syl.println("Cleanup complete")
+
+
 # # ################################################################################################
 # # Syntalos interface
 # # ################################################################################################
@@ -117,7 +120,7 @@ out_scene.set_metadata_value("framerate", 30.0)
 out_scene.set_metadata_value_size("size", [1600, 1200])
 
 
-def prepare() -> bool:
+def prepare():
     clear_state()
     assert STATE.settings is not None
 
@@ -126,9 +129,11 @@ def prepare() -> bool:
         STATE.device = device
         return True
     except Exception as exc:
-        syl.println(f"Neon prepare failed: {exc}")
+        msg = f"Prepare failed: {exc.__class__.__name__}({exc})"
+        syl.println(msg)
         cleanup()
-        raise
+        syl.raise_error(msg)
+        return False
 
 
 def start() -> None:
@@ -142,12 +147,10 @@ def start() -> None:
         if settings.companion_recording_enabled:
             _recording_id = device.recording_start()
     except Exception as exc:
-        syl.println(f"Neon start failed: {exc}")
-        try:
-            cleanup()
-        except Exception as cleanup_exc:
-            syl.println(f"Neon start cleanup failed: {cleanup_exc}")
-        raise
+        msg = f"Start failed: {exc.__class__.__name__}({exc})"
+        syl.println(msg)
+        cleanup()
+        syl.raise_error(msg)
 
 
 def run() -> None:
@@ -164,6 +167,11 @@ def run() -> None:
             if scene_frame is not None:
                 submit_scene_frame(scene_frame)
             syl.wait(1)
+    except Exception as exc:
+        msg = f"Run failed: {exc.__class__.__name__}({exc})"
+        syl.println(msg)
+        cleanup()
+        syl.raise_error(msg)
     finally:
         cleanup()
 
@@ -174,7 +182,13 @@ def stop() -> None:
 
 def set_settings(settings: bytes) -> None:
     if settings:
-        STATE.settings = deserialise_settings(settings)
+        try:
+            STATE.settings = deserialise_settings(settings)
+        except Exception as exc:
+            msg = f"Failed to parse settings: {exc.__class__.__name__}({exc})"
+            syl.println(msg)
+            syl.raise_error(msg)
+            STATE.settings = Settings()
     elif STATE.settings is None:
         STATE.settings = Settings()
 

@@ -29,6 +29,7 @@ class Settings:
 class State:
     settings: Settings | None = None
     stop_requested: bool = False
+    running: bool = False
     device: Device | None = None
     frame_index: int = 0
     first_device_ts_us: int | None = None
@@ -38,6 +39,7 @@ def clear_state() -> None:
     # Settings should stay persistent across runs
     STATE.device = None
     STATE.stop_requested = False
+    STATE.running = False
     STATE.frame_index = 0
     STATE.first_device_ts_us = None
 
@@ -154,6 +156,7 @@ def start() -> None:
 
 
 def run() -> None:
+    STATE.running = True
     device = STATE.device
     settings = STATE.settings
     assert device is not None
@@ -170,7 +173,6 @@ def run() -> None:
     except Exception as exc:
         msg = f"Run failed: {exc.__class__.__name__}({exc})"
         syl.println(msg)
-        cleanup()
         syl.raise_error(msg)
     finally:
         cleanup()
@@ -178,6 +180,9 @@ def run() -> None:
 
 def stop() -> None:
     STATE.stop_requested = True
+    # In case other modules trigger a premature stop(), we need to call cleanup() here
+    if not STATE.running:
+        cleanup()
 
 
 def set_settings(settings: bytes) -> None:
@@ -199,6 +204,12 @@ def set_settings(settings: bytes) -> None:
 
 
 def show_settings(settings: bytes) -> None:
+    # Showing the settings UI while running prevents the run() loop from advancing.
+    # Keep it simple: no settings UI while running.
+    if STATE.running:
+        syl.println("Cannot show settings while running")
+        return
+
     if not settings:
         if STATE.settings is None:
             STATE.settings = Settings()

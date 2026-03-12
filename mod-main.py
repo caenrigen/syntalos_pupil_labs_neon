@@ -90,12 +90,14 @@ def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
 
 
 def cleanup() -> None:
-    settings = STATE.settings
-    assert settings is not None
-
     device = STATE.device
-
     if device is None:
+        syl.println("No device to cleanup, skipping cleanup()")
+        return
+
+    settings = STATE.settings
+    if settings is None:
+        syl.println("Settings not set, skipping cleanup()")
         return
 
     if settings.companion_recording_enabled:
@@ -125,7 +127,9 @@ out_scene.set_metadata_value_size("size", [1600, 1200])
 
 def prepare():
     clear_state()
-    assert STATE.settings is not None
+    if STATE.settings is None:
+        syl.println("Settings not set, aborting prepare()")
+        return False
 
     try:
         device = connect_device()

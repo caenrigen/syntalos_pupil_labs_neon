@@ -20,7 +20,8 @@ from PyQt6.QtWidgets import QDialog
 class Settings:
     phone_ip: str = ""
     phone_port: int = 8080
-    discovery_timeout_s: float = 10.0
+    # Syntalos timeout is 10s
+    discovery_timeout_s: float = 8.0
     frame_wait_timeout_s: float = 0.2
     companion_recording_enabled: bool = True
 

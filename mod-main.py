@@ -13,7 +13,7 @@ from pupil_labs.realtime_api.simple import (
     discover_one_device,
 )
 from PyQt6 import uic
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QLayout
 
 
 @dataclass
@@ -31,6 +31,7 @@ class State:
     settings: Settings | None = None
     stop_requested: bool = False
     running: bool = False
+    settings_dialog: QDialog | None = None
     device: Device | None = None
     frame_index: int = 0
     first_device_ts_us: int | None = None
@@ -57,6 +58,24 @@ def serialise_settings(settings: Settings) -> bytes:
 
 def deserialise_settings(settings: bytes) -> Settings:
     return Settings(**json.loads(settings.decode()))  # pyright: ignore[reportAny]
+
+
+def save_current_settings() -> None:
+    assert STATE.settings is not None
+    syl.save_settings(serialise_settings(STATE.settings))
+
+
+def close_settings_dialog() -> None:
+    dialog = STATE.settings_dialog
+    if dialog is not None:
+        dialog.close()
+
+
+def fit_dialog_to_contents(dialog: QDialog) -> None:
+    layout = dialog.layout()
+    if layout is not None:
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+    dialog.adjustSize()
 
 
 def connect_device() -> Device:
@@ -127,6 +146,7 @@ out_scene.set_metadata_value_size("size", [1600, 1200])
 
 def prepare():
     clear_state()
+    close_settings_dialog()
     if STATE.settings is None:
         syl.println("Settings not set, aborting prepare()")
         return False
@@ -223,20 +243,44 @@ def show_settings(settings: bytes) -> None:
 
     assert STATE.settings is not None
 
-    dialog: QDialog = uic.loadUi(UI_FILE_PATH)
+    dialog = STATE.settings_dialog
+    if dialog is not None:
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return
+
+    dialog = uic.loadUi(UI_FILE_PATH)
+    STATE.settings_dialog = dialog
+    fit_dialog_to_contents(dialog)
     dialog.phoneIpLineEdit.setText(STATE.settings.phone_ip)
     dialog.phonePortSpinBox.setValue(STATE.settings.phone_port)
     dialog.discoveryTimeoutSpinBox.setValue(STATE.settings.discovery_timeout_s)
     dialog.frameWaitTimeoutSpinBox.setValue(STATE.settings.frame_wait_timeout_s)
     dialog.companionRecordingCheckBox.setChecked(STATE.settings.companion_recording_enabled)
 
-    if dialog.exec() == QDialog.DialogCode.Accepted:
+    def persist_settings():
+        assert STATE.settings is not None
         STATE.settings.phone_ip = dialog.phoneIpLineEdit.text().strip()
         STATE.settings.phone_port = dialog.phonePortSpinBox.value()
         STATE.settings.discovery_timeout_s = dialog.discoveryTimeoutSpinBox.value()
         STATE.settings.frame_wait_timeout_s = dialog.frameWaitTimeoutSpinBox.value()
         STATE.settings.companion_recording_enabled = dialog.companionRecordingCheckBox.isChecked()
-        syl.save_settings(serialise_settings(STATE.settings))
+        save_current_settings()
+
+    def cleanup_dialog():
+        STATE.settings_dialog = None
+
+    dialog.phoneIpLineEdit.textChanged.connect(persist_settings)
+    dialog.phonePortSpinBox.valueChanged.connect(persist_settings)
+    dialog.discoveryTimeoutSpinBox.valueChanged.connect(persist_settings)
+    dialog.frameWaitTimeoutSpinBox.valueChanged.connect(persist_settings)
+    dialog.companionRecordingCheckBox.checkStateChanged.connect(persist_settings)
+    dialog.finished.connect(cleanup_dialog)
+
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
 
 
 # Register settings callback (called when settings dialog is shown)

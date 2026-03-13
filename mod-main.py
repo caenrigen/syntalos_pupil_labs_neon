@@ -201,6 +201,7 @@ def run() -> None:
         syl.raise_error(msg)
     finally:
         cleanup()
+        STATE.running = False
 
 
 def stop() -> None:

@@ -1,12 +1,10 @@
 """Pupil Labs Neon Syntalos Module."""
 
-from datetime import timedelta
 import json
 from dataclasses import asdict, dataclass
 
 import syntalos_mlink as syl
 
-from pupil_labs.realtime_api.device import DeviceError
 from pupil_labs.realtime_api.simple import (
     Device,
     SimpleVideoFrame,
@@ -100,7 +98,7 @@ def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
 
     frame = syl.Frame()
     frame.mat = scene_frame.bgr_pixels  # already a numpy array
-    frame.time_usec = timedelta(microseconds=dev_us - STATE.first_device_ts_us)
+    frame.time_usec = dev_us - STATE.first_device_ts_us
     frame.index = STATE.frame_index
 
     STATE.frame_index += 1

@@ -193,6 +193,8 @@ def run() -> None:
             )
             if scene_frame is not None:
                 submit_scene_frame(scene_frame)
+                # https://github.com/syntalos/syntalos/issues/92
+                del scene_frame
             syl.wait(1)
     except Exception as exc:
         msg = f"Run failed: {exc.__class__.__name__}({exc})"

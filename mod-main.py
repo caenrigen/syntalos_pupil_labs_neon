@@ -21,7 +21,8 @@ class Settings:
     # Syntalos timeout is 10s
     discovery_timeout_s: float = 8.0
     frame_wait_timeout_s: float = 0.2
-    companion_recording_enabled: bool = True
+    # Controlling the recording start/saving has been flaky
+    companion_recording_enabled: bool = False
 
 
 @dataclass

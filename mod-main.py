@@ -233,7 +233,7 @@ def set_settings(settings: bytes) -> None:
 def show_settings(settings: bytes) -> None:
     # Showing the settings UI while running prevents the run() loop from advancing.
     # Keep it simple: no settings UI while running.
-    if STATE.running:
+    if STATE.running or syl.is_running():
         syl.println("Cannot show settings while running")
         return
 

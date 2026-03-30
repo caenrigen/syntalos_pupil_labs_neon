@@ -145,6 +145,7 @@ out_scene.set_metadata_value_size("size", [1600, 1200])
 
 def prepare():
     clear_state()
+    save_current_settings()
     close_settings_dialog()
     if STATE.settings is None:
         syl.println("Settings not set, aborting prepare()")

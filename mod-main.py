@@ -33,7 +33,7 @@ class State:
     settings_dialog: QDialog | None = None
     device: Device | None = None
     frame_index: int = 0
-    first_device_ts_us: int | None = None
+    offset_us: int | None = None
 
 
 def clear_state() -> None:
@@ -42,7 +42,7 @@ def clear_state() -> None:
     STATE.stop_requested = False
     STATE.running = False
     STATE.frame_index = 0
-    STATE.first_device_ts_us = None
+    STATE.offset_us = None
 
 
 STATE = State()
@@ -92,14 +92,14 @@ def connect_device() -> Device:
 
 
 def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
-    dev_us = int(scene_frame.timestamp_unix_seconds * 1e6)
+    ts_us = int(scene_frame.timestamp_unix_seconds * 1e6)
 
-    if STATE.first_device_ts_us is None:
-        STATE.first_device_ts_us = dev_us
+    if STATE.offset_us is None:
+        STATE.offset_us = -ts_us + int(syl.time_since_start_usec())
 
     frame = syl.Frame()
     frame.mat = scene_frame.bgr_pixels  # already a numpy array
-    frame.time_usec = dev_us - STATE.first_device_ts_us
+    frame.time_usec = ts_us + STATE.offset_us
     frame.index = STATE.frame_index
 
     STATE.frame_index += 1

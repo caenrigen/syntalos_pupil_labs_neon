@@ -1,6 +1,7 @@
 """Pupil Labs Neon Syntalos Module."""
 
 import json
+import traceback
 from dataclasses import asdict, dataclass
 
 import syntalos_mlink as syl
@@ -12,6 +13,15 @@ from pupil_labs.realtime_api.simple import (
 )
 from PyQt6 import uic
 from PyQt6.QtWidgets import QDialog, QLayout
+
+
+def handle_fatal_exc(exc: Exception, syntalos_raise: bool, clean: bool, prefix: str = ""):
+    msg = f"{prefix}{': ' if prefix else ''}{exc.__class__.__name__}({exc})"
+    syl.println(f"{msg}\n{traceback.format_exc()}")
+    if clean:
+        cleanup()
+    if syntalos_raise:
+        syl.raise_error(msg)
 
 
 @dataclass
@@ -34,6 +44,7 @@ class State:
     device: Device | None = None
     frame_index: int = 0
     offset_us: int | None = None
+    offset_start_us: int | None = None
 
 
 def clear_state() -> None:
@@ -43,12 +54,12 @@ def clear_state() -> None:
     STATE.running = False
     STATE.frame_index = 0
     STATE.offset_us = None
+    STATE.offset_start_us = None
 
 
 STATE = State()
 
 STREAM_NAME_WORLD = "world"
-UI_FILE_PATH = "settings.ui"
 
 
 def serialise_settings(settings: Settings) -> bytes:
@@ -95,13 +106,20 @@ def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
     ts_us = int(scene_frame.timestamp_unix_seconds * 1e6)
 
     if STATE.offset_us is None:
-        STATE.offset_us = -ts_us + int(syl.time_since_start_usec())
+        assert STATE.offset_start_us is not None
+        syl.println(f"{STATE.offset_start_us = }")
+        STATE.offset_us = -ts_us + STATE.offset_start_us
 
     frame = syl.Frame()
     frame.mat = scene_frame.bgr_pixels  # already a numpy array
-    frame.time_usec = ts_us + STATE.offset_us
-    frame.index = STATE.frame_index
+    time_usec = ts_us + STATE.offset_us
 
+    # From time to time the Neon App on the Android crashes and the frame arrives with negative timestamp
+    if time_usec <= 0:
+        syl.println(f"Non-positive {time_usec = }, {scene_frame.timestamp_unix_seconds = }")
+    frame.time_usec = time_usec
+
+    frame.index = STATE.frame_index
     STATE.frame_index += 1
 
     out_scene.submit(frame)
@@ -156,28 +174,21 @@ def prepare():
         STATE.device = device
         return True
     except Exception as exc:
-        msg = f"Prepare failed: {exc.__class__.__name__}({exc})"
-        syl.println(msg)
-        cleanup()
-        syl.raise_error(msg)
+        handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Prepare failed")
         return False
 
 
 def start() -> None:
-    device = STATE.device
-    settings = STATE.settings
-    assert device is not None
-    assert settings is not None
+    assert STATE.device is not None
+    assert STATE.settings is not None
 
     try:
-        device.streaming_start(STREAM_NAME_WORLD)
-        if settings.companion_recording_enabled:
-            _recording_id = device.recording_start()
+        STATE.device.streaming_start(STREAM_NAME_WORLD)
+        STATE.offset_start_us = int(syl.time_since_start_usec())
+        if STATE.settings.companion_recording_enabled:
+            _recording_id = STATE.device.recording_start()
     except Exception as exc:
-        msg = f"Start failed: {exc.__class__.__name__}({exc})"
-        syl.println(msg)
-        cleanup()
-        syl.raise_error(msg)
+        handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Start failed")
 
 
 def run() -> None:
@@ -198,12 +209,10 @@ def run() -> None:
                 del scene_frame
             syl.wait(1)
     except Exception as exc:
-        msg = f"Run failed: {exc.__class__.__name__}({exc})"
-        syl.println(msg)
-        syl.raise_error(msg)
-    finally:
-        cleanup()
-        STATE.running = False
+        handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Run failed")
+
+    cleanup()
+    STATE.running = False
 
 
 def stop() -> None:
@@ -229,6 +238,9 @@ def set_settings(settings: bytes) -> None:
 # # ####################################################################################
 # # Settings UI
 # # ####################################################################################
+
+
+UI_FILE_PATH = "settings.ui"
 
 
 def show_settings(settings: bytes) -> None:

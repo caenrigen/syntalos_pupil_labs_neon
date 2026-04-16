@@ -1,5 +1,6 @@
 """Pupil Labs Neon Syntalos Module."""
 
+import time
 import json
 import traceback
 from dataclasses import asdict, dataclass
@@ -44,7 +45,6 @@ class State:
     device: Device | None = None
     frame_index: int = 0
     offset_us: int | None = None
-    offset_start_us: int | None = None
 
 
 def clear_state() -> None:
@@ -54,7 +54,6 @@ def clear_state() -> None:
     STATE.running = False
     STATE.frame_index = 0
     STATE.offset_us = None
-    STATE.offset_start_us = None
 
 
 STATE = State()
@@ -105,10 +104,7 @@ def connect_device() -> Device:
 def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
     ts_us = int(scene_frame.timestamp_unix_seconds * 1e6)
 
-    if STATE.offset_us is None:
-        assert STATE.offset_start_us is not None
-        syl.println(f"{STATE.offset_start_us = }")
-        STATE.offset_us = -ts_us + STATE.offset_start_us
+    assert STATE.offset_us is not None
 
     frame = syl.Frame()
     frame.mat = scene_frame.bgr_pixels  # already a numpy array
@@ -184,7 +180,7 @@ def start() -> None:
 
     try:
         STATE.device.streaming_start(STREAM_NAME_WORLD)
-        STATE.offset_start_us = int(syl.time_since_start_usec())
+        STATE.offset_us = -int(time.time() * 1e6)
         if STATE.settings.companion_recording_enabled:
             _recording_id = STATE.device.recording_start()
     except Exception as exc:

@@ -57,6 +57,7 @@ def clear_state() -> None:
 
 
 STATE = State()
+out_scene: syl.OutputPort | None = None
 
 STREAM_NAME_WORLD = "world"
 
@@ -102,6 +103,7 @@ def connect_device() -> Device:
 
 
 def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
+    assert out_scene is not None
     ts_us = int(scene_frame.timestamp_unix_seconds * 1e6)
 
     assert STATE.offset_us is not None
@@ -151,19 +153,25 @@ def cleanup() -> None:
 # # ####################################################################################
 
 
-out_scene = syl.get_output_port("scene")
-out_scene.set_metadata_value("framerate", 30.0)
-# Default Neon scene camera resolution
-out_scene.set_metadata_value_size("size", [1600, 1200])
+def register_ports() -> None:
+    syl.register_output_port("scene", "Scene Camera", "Frame")
 
 
 def prepare():
+    global out_scene
+
     clear_state()
     save_current_settings()
     close_settings_dialog()
     if STATE.settings is None:
         syl.println("Settings not set, aborting prepare()")
         return False
+
+    out_scene = syl.get_output_port("scene")
+    assert out_scene is not None
+    out_scene.set_metadata_value("framerate", 30.0)
+    # Default Neon scene camera resolution
+    out_scene.set_metadata_value_size("size", [1600, 1200])
 
     try:
         device = connect_device()
@@ -296,3 +304,6 @@ def show_settings(settings: bytes) -> None:
 
 # Register settings callback (called when settings dialog is shown)
 syl.call_on_show_settings(show_settings)
+
+# Register ports at module level so Syntalos can restore project connections.
+register_ports()

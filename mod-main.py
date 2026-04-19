@@ -43,7 +43,8 @@ class State:
     running: bool = False
     settings_dialog: QDialog | None = None
     device: Device | None = None
-    frame_index: int = 0
+    scene_frame_index: int = 0
+    eyes_frame_index: int = 0
     offset_us: int | None = None
 
 
@@ -52,14 +53,17 @@ def clear_state() -> None:
     STATE.device = None
     STATE.stop_requested = False
     STATE.running = False
-    STATE.frame_index = 0
+    STATE.scene_frame_index = 0
+    STATE.eyes_frame_index = 0
     STATE.offset_us = None
 
 
 STATE = State()
 out_scene: syl.OutputPort | None = None
+out_eyes: syl.OutputPort | None = None
 
-STREAM_NAME_WORLD = "world"
+STREAM_NAME_SCENE = "world"
+STREAM_NAME_EYES = "eyes"
 
 
 def serialise_settings(settings: Settings) -> bytes:
@@ -102,25 +106,42 @@ def connect_device() -> Device:
     return device
 
 
-def submit_scene_frame(scene_frame: SimpleVideoFrame) -> None:
-    assert out_scene is not None
-    ts_us = int(scene_frame.timestamp_unix_seconds * 1e6)
+def submit_video_frame(
+    video_frame: SimpleVideoFrame, out_port: syl.OutputPort, stream_name: str, frame_index: int
+) -> int:
+    ts_us = int(video_frame.timestamp_unix_seconds * 1e6)
 
     assert STATE.offset_us is not None
 
     frame = syl.Frame()
-    frame.mat = scene_frame.bgr_pixels  # already a numpy array
+    frame.mat = video_frame.bgr_pixels  # already a numpy array
     time_usec = ts_us + STATE.offset_us
 
     # From time to time the Neon App on the Android crashes and the frame arrives with negative timestamp
     if time_usec <= 0:
-        syl.println(f"Non-positive {time_usec = }, {scene_frame.timestamp_unix_seconds = }")
+        syl.println(
+            f"Non-positive {time_usec = }, {stream_name = }, {video_frame.timestamp_unix_seconds = }"
+        )
     frame.time_usec = time_usec
 
-    frame.index = STATE.frame_index
-    STATE.frame_index += 1
+    frame.index = frame_index
 
-    out_scene.submit(frame)
+    out_port.submit(frame)
+    return frame_index + 1
+
+
+def submit_scene_frame(frame: SimpleVideoFrame) -> None:
+    assert out_scene is not None
+    STATE.scene_frame_index = submit_video_frame(
+        frame, out_scene, STREAM_NAME_SCENE, STATE.scene_frame_index
+    )
+
+
+def submit_eyes_frame(frame: SimpleVideoFrame) -> None:
+    assert out_eyes is not None
+    STATE.eyes_frame_index = submit_video_frame(
+        frame, out_eyes, STREAM_NAME_EYES, STATE.eyes_frame_index
+    )
 
 
 def cleanup() -> None:
@@ -148,17 +169,18 @@ def cleanup() -> None:
     syl.println("Cleanup complete")
 
 
+def register_ports() -> None:
+    syl.register_output_port("scene", "Scene Camera", "Frame")
+    syl.register_output_port("eyes", "Eyes Camera", "Frame")
+
+
 # # ####################################################################################
 # # Syntalos interface
 # # ####################################################################################
 
 
-def register_ports() -> None:
-    syl.register_output_port("scene", "Scene Camera", "Frame")
-
-
 def prepare():
-    global out_scene
+    global out_scene, out_eyes
 
     clear_state()
     save_current_settings()
@@ -170,8 +192,12 @@ def prepare():
     out_scene = syl.get_output_port("scene")
     assert out_scene is not None
     out_scene.set_metadata_value("framerate", 30.0)
-    # Default Neon scene camera resolution
-    out_scene.set_metadata_value_size("size", [1600, 1200])
+    out_scene.set_metadata_value_size("size", syl.MetaSize(1600, 1200))
+
+    out_eyes = syl.get_output_port("eyes")
+    assert out_eyes is not None
+    out_eyes.set_metadata_value("framerate", 30.0)
+    out_eyes.set_metadata_value_size("size", syl.MetaSize(384, 192))
 
     try:
         device = connect_device()
@@ -187,7 +213,8 @@ def start() -> None:
     assert STATE.settings is not None
 
     try:
-        STATE.device.streaming_start(STREAM_NAME_WORLD)
+        STATE.device.streaming_start(STREAM_NAME_SCENE)
+        STATE.device.streaming_start(STREAM_NAME_EYES)
         STATE.offset_us = -int(time.time() * 1e6)
         if STATE.settings.companion_recording_enabled:
             _recording_id = STATE.device.recording_start()
@@ -211,6 +238,12 @@ def run() -> None:
                 submit_scene_frame(scene_frame)
                 # https://github.com/syntalos/syntalos/issues/92
                 del scene_frame
+
+            eyes_frame = device.receive_eyes_video_frame(timeout_seconds=0.0)
+            if eyes_frame is not None:
+                submit_eyes_frame(eyes_frame)
+                # https://github.com/syntalos/syntalos/issues/92
+                del eyes_frame
             syl.wait(1)
     except Exception as exc:
         handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Run failed")

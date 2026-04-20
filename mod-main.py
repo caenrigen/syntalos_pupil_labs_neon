@@ -108,13 +108,16 @@ out_scene: syl.OutputPort | None = None
 out_eyes: syl.OutputPort | None = None
 out_gaze: syl.OutputPort | None = None
 out_imu: syl.OutputPort | None = None
-out_eye_events: syl.OutputPort | None = None
+out_eye_events_simple: syl.OutputPort | None = None  # Only has a few fields
+out_eye_events_complete: syl.OutputPort | None = None  # Has many fields
 
 STREAM_NAME_SCENE = "world"
 STREAM_NAME_EYES = "eyes"
 STREAM_NAME_GAZE = "gaze"
 STREAM_NAME_IMU = "imu"
 STREAM_NAME_EYE_EVENTS = "eye_events"
+STREAM_NAME_EYE_EVENTS_COMPLETE = "eye_events_complete"
+STREAM_NAME_EYE_EVENTS_SIMPLE = "eye_events_simple"
 GAZE_SIGNAL_NAMES = [
     "x",
     "y",
@@ -197,7 +200,7 @@ IMU_UNITS = [
     "a.u.",
     "a.u.",
 ]
-EYE_EVENTS_TABLE_HEADER = [
+EYE_EVENTS_COMPLETE_TABLE_HEADER = [
     "timestamp_us",
     "event_type",
     "event_label",
@@ -213,6 +216,13 @@ EYE_EVENTS_TABLE_HEADER = [
     "amplitude_angle_deg",
     "mean_velocity",
     "max_velocity",
+]
+EYE_EVENTS_SIMPLE_TABLE_HEADER = [
+    "timestamp_us",
+    "event_type",
+    "event_label",
+    "start_time_ns",
+    "end_time_ns",
 ]
 
 SCENE_QUEUE_MAX = 8
@@ -447,42 +457,53 @@ def eye_event_label(event_type: int) -> str:
 
 
 def submit_eye_event(event: EyeEventData) -> None:
-    assert out_eye_events is not None
-
-    row: list[Any] = [
-        timestamp_to_us(event.rtp_ts_unix_seconds, STREAM_NAME_EYE_EVENTS),
-        event.event_type,
-        eye_event_label(event.event_type),
-        event.start_time_ns,
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-    ]
+    timestamp_us = timestamp_to_us(event.rtp_ts_unix_seconds, STREAM_NAME_EYE_EVENTS)
+    event_label = eye_event_label(event.event_type)
     if isinstance(event, FixationEventData):
-        row[4] = event.end_time_ns
-        row[5] = event.start_gaze_x
-        row[6] = event.start_gaze_y
-        row[7] = event.end_gaze_x
-        row[8] = event.end_gaze_y
-        row[9] = event.mean_gaze_x
-        row[10] = event.mean_gaze_y
-        row[11] = event.amplitude_pixels
-        row[12] = event.amplitude_angle_deg
-        row[13] = event.mean_velocity
-        row[14] = event.max_velocity
+        assert out_eye_events_complete is not None
+        out_eye_events_complete.submit(
+            [
+                timestamp_us,
+                event.event_type,
+                event_label,
+                event.start_time_ns,
+                event.end_time_ns,
+                event.start_gaze_x,
+                event.start_gaze_y,
+                event.end_gaze_x,
+                event.end_gaze_y,
+                event.mean_gaze_x,
+                event.mean_gaze_y,
+                event.amplitude_pixels,
+                event.amplitude_angle_deg,
+                event.mean_velocity,
+                event.max_velocity,
+            ]
+        )
     elif isinstance(event, BlinkEventData):
-        row[4] = event.end_time_ns
-    elif not isinstance(event, FixationOnsetEventData):
+        assert out_eye_events_simple is not None
+        out_eye_events_simple.submit(
+            [
+                timestamp_us,
+                event.event_type,
+                event_label,
+                event.start_time_ns,
+                event.end_time_ns,
+            ]
+        )
+    elif isinstance(event, FixationOnsetEventData):
+        assert out_eye_events_simple is not None
+        out_eye_events_simple.submit(
+            [
+                timestamp_us,
+                event.event_type,
+                event_label,
+                event.start_time_ns,
+                "",
+            ]
+        )
+    else:
         raise RuntimeError(f"Unexpected eye event data type: {event.__class__.__name__}")
-    out_eye_events.submit(row)
 
 
 def submit_scene_frame(frame: VideoFrame) -> None:
@@ -640,7 +661,8 @@ def register_ports() -> None:
     syl.register_output_port(STREAM_NAME_EYES, "Eyes Camera", "Frame")
     syl.register_output_port(STREAM_NAME_GAZE, "Gaze", "FloatSignalBlock")
     syl.register_output_port(STREAM_NAME_IMU, "IMU", "FloatSignalBlock")
-    syl.register_output_port(STREAM_NAME_EYE_EVENTS, "Eye Events", "TableRow")
+    syl.register_output_port(STREAM_NAME_EYE_EVENTS_COMPLETE, "Events Complete", "TableRow")
+    syl.register_output_port(STREAM_NAME_EYE_EVENTS_SIMPLE, "Events Simple", "TableRow")
 
 
 # # ####################################################################################
@@ -649,7 +671,7 @@ def register_ports() -> None:
 
 
 def prepare():
-    global out_scene, out_eyes, out_gaze, out_imu, out_eye_events
+    global out_scene, out_eyes, out_gaze, out_imu, out_eye_events_complete, out_eye_events_simple
 
     clear_state()
     save_current_settings()
@@ -680,9 +702,13 @@ def prepare():
     out_imu.set_metadata_value("time_unit", "microseconds")
     out_imu.set_metadata_value("data_unit", IMU_UNITS)
 
-    out_eye_events = syl.get_output_port(STREAM_NAME_EYE_EVENTS)
-    assert out_eye_events is not None
-    out_eye_events.set_metadata_value("table_header", EYE_EVENTS_TABLE_HEADER)
+    out_eye_events_complete = syl.get_output_port(STREAM_NAME_EYE_EVENTS_COMPLETE)
+    assert out_eye_events_complete is not None
+    out_eye_events_complete.set_metadata_value("table_header", EYE_EVENTS_COMPLETE_TABLE_HEADER)
+
+    out_eye_events_simple = syl.get_output_port(STREAM_NAME_EYE_EVENTS_SIMPLE)
+    assert out_eye_events_simple is not None
+    out_eye_events_simple.set_metadata_value("table_header", EYE_EVENTS_SIMPLE_TABLE_HEADER)
 
     try:
         if STATE.loop is None:

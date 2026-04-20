@@ -183,6 +183,15 @@ def fit_dialog_to_contents(dialog: QDialog) -> None:
     dialog.adjustSize()
 
 
+def force_tcp_rtsp_url(url: str) -> str:
+    if url.startswith("rtsp://"):
+        # force RTSP over TCP interleaving, this prevents frames corruption (e.g. green pixel chunks)
+        return "rtspt://" + url[len("rtsp://") :]
+    if url.startswith("rtspt://") or url.startswith("rtsps://"):
+        return url
+    raise RuntimeError(f"Unsupported stream URL scheme: {url}")
+
+
 async def connect_device() -> tuple[Device, str, str, str]:
     settings = STATE.settings
     assert settings is not None
@@ -213,6 +222,10 @@ async def connect_device() -> tuple[Device, str, str, str]:
             raise RuntimeError("Eyes camera stream unavailable")
         if gaze_url is None:
             raise RuntimeError("Gaze stream unavailable")
+
+        scene_url = force_tcp_rtsp_url(scene_url)
+        eyes_url = force_tcp_rtsp_url(eyes_url)
+        gaze_url = force_tcp_rtsp_url(gaze_url)
 
         return device, scene_url, eyes_url, gaze_url
     except Exception:

@@ -1,3 +1,4 @@
 # v1.8.0 changed the data types, and in a later commit on `main` they renamed a few parameters
 git+https://github.com/pupil-labs/pl-realtime-api@80feee74eb2863f59d2abe73570dda13bcde04e2
+# pupil-labs-realtime-api
 numpy

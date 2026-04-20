@@ -153,7 +153,8 @@ GAZE_UNITS = [
 SCENE_QUEUE_MAX = 8
 EYES_QUEUE_MAX = 64
 GAZE_QUEUE_MIN = 128
-ASYNC_LOOP_SLICE_S = 0.001
+ASYNC_LOOP_ADVANCE_S = 0.001
+ASYNC_LOOP_WRAPUP_S = 0.200
 
 
 def serialise_settings(settings: Settings):
@@ -421,6 +422,9 @@ def cleanup() -> None:
 
     try:
         loop.run_until_complete(cleanup_async())
+        # Advance the async loop a final bit for all pending tasks to wrap up.
+        # This pervents a series of errors being printed when quiting Syntalos.
+        loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_WRAPUP_S))
     except Exception as exc:
         syl.println(f"Cleanup failed: {exc.__class__.__name__}({exc})")
 
@@ -531,29 +535,12 @@ def run() -> None:
     try:
         while not STATE.stop_requested and syl.is_running():
             # Advance the async loop
-            loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_SLICE_S))
+            loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_ADVANCE_S))
             ensure_stream_tasks_healthy()
             drain_gaze_queue(gaze_queue)
             drain_video_queue(scene_queue, submit_scene_frame)
             drain_video_queue(eyes_queue, submit_eyes_frame)
             syl.wait(1)  # give time for syntalos to call stop()
-
-        # Flush the queues
-        loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_SLICE_S * 10))
-        ensure_stream_tasks_healthy()
-        drain_gaze_queue(gaze_queue)
-        drain_video_queue(scene_queue, submit_scene_frame)
-        drain_video_queue(eyes_queue, submit_eyes_frame)
-
-        # Flush pending batch
-        if len(STATE.gaze_timestamps_us):
-            assert out_gaze is not None
-            submit_float_block(
-                out_gaze,
-                STATE.gaze_timestamps_us,
-                STATE.gaze_rows,
-            )
-        loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_SLICE_S * 10))
     except Exception as exc:
         handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Run failed")
 

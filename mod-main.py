@@ -201,8 +201,8 @@ IMU_UNITS = [
     "a.u.",
 ]
 EYE_EVENTS_COMPLETE_SIGNAL_NAMES = [
-    "rtp_timestamp_us",
     "event_type",
+    "rtp_timestamp_us",
     "start_time_us",
     "end_time_us",
     "start_gaze_x",
@@ -217,8 +217,8 @@ EYE_EVENTS_COMPLETE_SIGNAL_NAMES = [
     "max_velocity",
 ]
 EYE_EVENTS_COMPLETE_UNITS = [
-    "microseconds",
     "a.u.",
+    "microseconds",
     "microseconds",
     "microseconds",
     "px",
@@ -233,14 +233,14 @@ EYE_EVENTS_COMPLETE_UNITS = [
     "a.u.",
 ]
 EYE_EVENTS_SIMPLE_SIGNAL_NAMES = [
-    "rtp_timestamp_us",
     "event_type",
+    "rtp_timestamp_us",
     "start_time_us",
     "end_time_us",
 ]
 EYE_EVENTS_SIMPLE_UNITS = [
-    "microseconds",
     "a.u.",
+    "microseconds",
     "microseconds",
     "microseconds",
 ]
@@ -380,6 +380,7 @@ def submit_float_block(
     out_port: syl.OutputPort,
     timestamps_us: list[int],
     rows: list[list[float]],
+    clear: bool = True,
 ) -> None:
     if not timestamps_us:
         return
@@ -388,19 +389,9 @@ def submit_float_block(
     block.timestamps = np.array(timestamps_us, dtype=np.uint64)
     block.data = np.array(rows, dtype=np.float64)
     out_port.submit(block)
-    timestamps_us.clear()
-    rows.clear()
-
-
-def submit_float_sample(
-    out_port: syl.OutputPort,
-    timestamp_us: int,
-    row: list[float],
-) -> None:
-    block = syl.FloatSignalBlock()
-    block.timestamps = np.array([timestamp_us], dtype=np.uint64)
-    block.data = np.array([row], dtype=np.float64)
-    out_port.submit(block)
+    if clear:
+        timestamps_us.clear()
+        rows.clear()
 
 
 def process_gaze_datum(gaze_datum: EyestateEyelidDualMonoGazeData) -> None:
@@ -488,49 +479,58 @@ def process_eye_event(event: EyeEventData) -> None:
     sample_timestamp_us = int(start_time_us)
     if isinstance(event, FixationEventData):
         assert out_eye_events_complete is not None
-        submit_float_sample(
+        submit_float_block(
             out_eye_events_complete,
-            sample_timestamp_us,
+            [sample_timestamp_us],
             [
-                float(rtp_timestamp_us),
-                float(event.event_type),
-                start_time_us,
-                timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
-                event.start_gaze_x,
-                event.start_gaze_y,
-                event.end_gaze_x,
-                event.end_gaze_y,
-                event.mean_gaze_x,
-                event.mean_gaze_y,
-                event.amplitude_pixels,
-                event.amplitude_angle_deg,
-                event.mean_velocity,
-                event.max_velocity,
+                [
+                    float(event.event_type),
+                    float(rtp_timestamp_us),
+                    start_time_us,
+                    timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
+                    event.start_gaze_x,
+                    event.start_gaze_y,
+                    event.end_gaze_x,
+                    event.end_gaze_y,
+                    event.mean_gaze_x,
+                    event.mean_gaze_y,
+                    event.amplitude_pixels,
+                    event.amplitude_angle_deg,
+                    event.mean_velocity,
+                    event.max_velocity,
+                ]
             ],
+            clear=False,
         )
     elif isinstance(event, BlinkEventData):
         assert out_eye_events_simple is not None
-        submit_float_sample(
+        submit_float_block(
             out_eye_events_simple,
-            sample_timestamp_us,
+            [sample_timestamp_us],
             [
-                float(rtp_timestamp_us),
-                float(event.event_type),
-                start_time_us,
-                timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
+                [
+                    float(event.event_type),
+                    float(rtp_timestamp_us),
+                    start_time_us,
+                    timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
+                ]
             ],
+            clear=False,
         )
     elif isinstance(event, FixationOnsetEventData):
         assert out_eye_events_simple is not None
-        submit_float_sample(
+        submit_float_block(
             out_eye_events_simple,
-            sample_timestamp_us,
+            [sample_timestamp_us],
             [
-                float(rtp_timestamp_us),
-                float(event.event_type),
-                start_time_us,
-                np.nan,
+                [
+                    float(event.event_type),
+                    float(rtp_timestamp_us),
+                    start_time_us,
+                    np.nan,
+                ]
             ],
+            clear=False,
         )
     else:
         raise RuntimeError(f"Unexpected eye event data type: {event.__class__.__name__}")

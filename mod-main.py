@@ -76,6 +76,10 @@ class State:
     gaze_rows: list[list[float]] = field(default_factory=list)
     imu_timestamps_us: list[int] = field(default_factory=list)
     imu_rows: list[list[float]] = field(default_factory=list)
+    eye_events_complete_timestamps_us: list[int] = field(default_factory=list)
+    eye_events_complete_rows: list[list[float]] = field(default_factory=list)
+    eye_events_simple_timestamps_us: list[int] = field(default_factory=list)
+    eye_events_simple_rows: list[list[float]] = field(default_factory=list)
 
 
 def clear_state() -> None:
@@ -101,6 +105,10 @@ def clear_state() -> None:
     STATE.gaze_rows.clear()
     STATE.imu_timestamps_us.clear()
     STATE.imu_rows.clear()
+    STATE.eye_events_complete_timestamps_us.clear()
+    STATE.eye_events_complete_rows.clear()
+    STATE.eye_events_simple_timestamps_us.clear()
+    STATE.eye_events_simple_rows.clear()
 
 
 STATE = State()
@@ -200,10 +208,8 @@ IMU_UNITS = [
     "a.u.",
     "a.u.",
 ]
-EYE_EVENTS_COMPLETE_TABLE_HEADER = [
-    "timestamp_us",
+EYE_EVENTS_COMPLETE_SIGNAL_NAMES = [
     "event_type",
-    "event_label",
     "start_time_us",
     "end_time_us",
     "start_gaze_x",
@@ -217,12 +223,30 @@ EYE_EVENTS_COMPLETE_TABLE_HEADER = [
     "mean_velocity",
     "max_velocity",
 ]
-EYE_EVENTS_SIMPLE_TABLE_HEADER = [
-    "timestamp_us",
+EYE_EVENTS_COMPLETE_UNITS = [
+    "a.u.",
+    "microseconds",
+    "microseconds",
+    "px",
+    "px",
+    "px",
+    "px",
+    "px",
+    "px",
+    "px",
+    "deg",
+    "a.u.",
+    "a.u.",
+]
+EYE_EVENTS_SIMPLE_SIGNAL_NAMES = [
     "event_type",
-    "event_label",
     "start_time_us",
     "end_time_us",
+]
+EYE_EVENTS_SIMPLE_UNITS = [
+    "a.u.",
+    "microseconds",
+    "microseconds",
 ]
 
 SCENE_QUEUE_MAX = 8
@@ -451,31 +475,15 @@ def process_imu_datum(imu_datum: IMUData) -> None:
         )
 
 
-def eye_event_label(event_type: int) -> str:
-    if event_type == 0:
-        return "saccade"
-    if event_type == 1:
-        return "fixation"
-    if event_type == 2:
-        return "saccade_onset"
-    if event_type == 3:
-        return "fixation_onset"
-    if event_type == 4:
-        return "blink"
-    return f"unknown_{event_type}"
-
-
-def submit_eye_event(event: EyeEventData) -> None:
+def process_eye_event(event: EyeEventData) -> None:
+    assert STATE.settings is not None
     timestamp_us = timestamp_to_us(event.rtp_ts_unix_seconds, STREAM_NAME_EYE_EVENTS)
-    event_label = eye_event_label(event.event_type)
     start_time_us = timestamp_ns_to_us(event.start_time_ns, STREAM_NAME_EYE_EVENTS)
     if isinstance(event, FixationEventData):
-        assert out_eye_events_complete is not None
-        out_eye_events_complete.submit(
+        STATE.eye_events_complete_timestamps_us.append(timestamp_us)
+        STATE.eye_events_complete_rows.append(
             [
-                timestamp_us,
-                event.event_type,
-                event_label,
+                float(event.event_type),
                 start_time_us,
                 timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
                 event.start_gaze_x,
@@ -490,28 +498,45 @@ def submit_eye_event(event: EyeEventData) -> None:
                 event.max_velocity,
             ]
         )
+        if len(STATE.eye_events_complete_timestamps_us) >= STATE.settings.batch_size:
+            assert out_eye_events_complete is not None
+            submit_float_block(
+                out_eye_events_complete,
+                STATE.eye_events_complete_timestamps_us,
+                STATE.eye_events_complete_rows,
+            )
     elif isinstance(event, BlinkEventData):
-        assert out_eye_events_simple is not None
-        out_eye_events_simple.submit(
+        STATE.eye_events_simple_timestamps_us.append(timestamp_us)
+        STATE.eye_events_simple_rows.append(
             [
-                timestamp_us,
-                event.event_type,
-                event_label,
+                float(event.event_type),
                 start_time_us,
                 timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
             ]
         )
+        if len(STATE.eye_events_simple_timestamps_us) >= STATE.settings.batch_size:
+            assert out_eye_events_simple is not None
+            submit_float_block(
+                out_eye_events_simple,
+                STATE.eye_events_simple_timestamps_us,
+                STATE.eye_events_simple_rows,
+            )
     elif isinstance(event, FixationOnsetEventData):
-        assert out_eye_events_simple is not None
-        out_eye_events_simple.submit(
+        STATE.eye_events_simple_timestamps_us.append(timestamp_us)
+        STATE.eye_events_simple_rows.append(
             [
-                timestamp_us,
-                event.event_type,
-                event_label,
+                float(event.event_type),
                 start_time_us,
-                "",
+                np.nan,
             ]
         )
+        if len(STATE.eye_events_simple_timestamps_us) >= STATE.settings.batch_size:
+            assert out_eye_events_simple is not None
+            submit_float_block(
+                out_eye_events_simple,
+                STATE.eye_events_simple_timestamps_us,
+                STATE.eye_events_simple_rows,
+            )
     else:
         raise RuntimeError(f"Unexpected eye event data type: {event.__class__.__name__}")
 
@@ -609,7 +634,7 @@ def drain_eye_events_queue(queue: asyncio.Queue[EyeEventData]) -> None:
             eye_event = queue.get_nowait()
         except asyncio.QueueEmpty:
             break
-        submit_eye_event(eye_event)
+        process_eye_event(eye_event)
 
 
 async def stop_stream_tasks() -> None:
@@ -671,8 +696,8 @@ def register_ports() -> None:
     syl.register_output_port(STREAM_NAME_EYES, "Eyes Camera", "Frame")
     syl.register_output_port(STREAM_NAME_GAZE, "Gaze", "FloatSignalBlock")
     syl.register_output_port(STREAM_NAME_IMU, "IMU", "FloatSignalBlock")
-    syl.register_output_port(STREAM_NAME_EYE_EVENTS_COMPLETE, "Events Complete", "TableRow")
-    syl.register_output_port(STREAM_NAME_EYE_EVENTS_SIMPLE, "Events Simple", "TableRow")
+    syl.register_output_port(STREAM_NAME_EYE_EVENTS_COMPLETE, "Events Complete", "FloatSignalBlock")
+    syl.register_output_port(STREAM_NAME_EYE_EVENTS_SIMPLE, "Events Simple", "FloatSignalBlock")
 
 
 # # ####################################################################################
@@ -714,11 +739,15 @@ def prepare():
 
     out_eye_events_complete = syl.get_output_port(STREAM_NAME_EYE_EVENTS_COMPLETE)
     assert out_eye_events_complete is not None
-    out_eye_events_complete.set_metadata_value("table_header", EYE_EVENTS_COMPLETE_TABLE_HEADER)
+    out_eye_events_complete.set_metadata_value("signal_names", EYE_EVENTS_COMPLETE_SIGNAL_NAMES)
+    out_eye_events_complete.set_metadata_value("time_unit", "microseconds")
+    out_eye_events_complete.set_metadata_value("data_unit", EYE_EVENTS_COMPLETE_UNITS)
 
     out_eye_events_simple = syl.get_output_port(STREAM_NAME_EYE_EVENTS_SIMPLE)
     assert out_eye_events_simple is not None
-    out_eye_events_simple.set_metadata_value("table_header", EYE_EVENTS_SIMPLE_TABLE_HEADER)
+    out_eye_events_simple.set_metadata_value("signal_names", EYE_EVENTS_SIMPLE_SIGNAL_NAMES)
+    out_eye_events_simple.set_metadata_value("time_unit", "microseconds")
+    out_eye_events_simple.set_metadata_value("data_unit", EYE_EVENTS_SIMPLE_UNITS)
 
     try:
         if STATE.loop is None:
@@ -835,6 +864,20 @@ def run() -> None:
             out_imu,
             STATE.imu_timestamps_us,
             STATE.imu_rows,
+        )
+    if len(STATE.eye_events_complete_timestamps_us):
+        assert out_eye_events_complete is not None
+        submit_float_block(
+            out_eye_events_complete,
+            STATE.eye_events_complete_timestamps_us,
+            STATE.eye_events_complete_rows,
+        )
+    if len(STATE.eye_events_simple_timestamps_us):
+        assert out_eye_events_simple is not None
+        submit_float_block(
+            out_eye_events_simple,
+            STATE.eye_events_simple_timestamps_us,
+            STATE.eye_events_simple_rows,
         )
 
     cleanup()

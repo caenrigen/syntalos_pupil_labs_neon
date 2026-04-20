@@ -204,8 +204,8 @@ EYE_EVENTS_COMPLETE_TABLE_HEADER = [
     "timestamp_us",
     "event_type",
     "event_label",
-    "start_time_ns",
-    "end_time_ns",
+    "start_time_us",
+    "end_time_us",
     "start_gaze_x",
     "start_gaze_y",
     "end_gaze_x",
@@ -221,8 +221,8 @@ EYE_EVENTS_SIMPLE_TABLE_HEADER = [
     "timestamp_us",
     "event_type",
     "event_label",
-    "start_time_ns",
-    "end_time_ns",
+    "start_time_us",
+    "end_time_us",
 ]
 
 SCENE_QUEUE_MAX = 8
@@ -333,6 +333,15 @@ def timestamp_to_us(timestamp_unix_seconds: float, stream_name: str) -> int:
     # From time to time the Neon App on the Android crashes and the frame arrives with negative timestamp
     if time_us <= 0:
         syl.println(f"Non-positive {time_us = }, {stream_name = }, {timestamp_unix_seconds = }")
+    return time_us
+
+
+def timestamp_ns_to_us(timestamp_unix_ns: int, stream_name: str) -> float:
+    assert STATE.offset_us is not None
+    time_ns = timestamp_unix_ns + STATE.offset_us * 1000
+    time_us = time_ns / 1000.0
+    if time_us <= 0:
+        syl.println(f"Non-positive {time_us = }, {stream_name = }, {timestamp_unix_ns = }")
     return time_us
 
 
@@ -459,6 +468,7 @@ def eye_event_label(event_type: int) -> str:
 def submit_eye_event(event: EyeEventData) -> None:
     timestamp_us = timestamp_to_us(event.rtp_ts_unix_seconds, STREAM_NAME_EYE_EVENTS)
     event_label = eye_event_label(event.event_type)
+    start_time_us = timestamp_ns_to_us(event.start_time_ns, STREAM_NAME_EYE_EVENTS)
     if isinstance(event, FixationEventData):
         assert out_eye_events_complete is not None
         out_eye_events_complete.submit(
@@ -466,8 +476,8 @@ def submit_eye_event(event: EyeEventData) -> None:
                 timestamp_us,
                 event.event_type,
                 event_label,
-                event.start_time_ns,
-                event.end_time_ns,
+                start_time_us,
+                timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
                 event.start_gaze_x,
                 event.start_gaze_y,
                 event.end_gaze_x,
@@ -487,8 +497,8 @@ def submit_eye_event(event: EyeEventData) -> None:
                 timestamp_us,
                 event.event_type,
                 event_label,
-                event.start_time_ns,
-                event.end_time_ns,
+                start_time_us,
+                timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
             ]
         )
     elif isinstance(event, FixationOnsetEventData):
@@ -498,7 +508,7 @@ def submit_eye_event(event: EyeEventData) -> None:
                 timestamp_us,
                 event.event_type,
                 event_label,
-                event.start_time_ns,
+                start_time_us,
                 "",
             ]
         )

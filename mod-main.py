@@ -1,14 +1,23 @@
 """Pupil Labs Neon Syntalos Module."""
 
+import asyncio
+import contextlib
 import json
 import time
 import traceback
 from dataclasses import asdict, dataclass, field
+from typing import Any, Callable
 
 import numpy as np
 import syntalos_mlink as syl
 
-from pupil_labs.realtime_api.simple import Device, SimpleVideoFrame, discover_one_device
+from pupil_labs.realtime_api import (
+    Device,
+    Network,
+    VideoFrame,
+    receive_gaze_data,
+    receive_video_frames,
+)
 from pupil_labs.realtime_api.streaming.gaze import EyestateEyelidDualMonoGazeData
 from PyQt6 import uic
 from PyQt6.QtWidgets import QDialog, QLayout
@@ -28,7 +37,7 @@ class Settings:
     phone_ip: str = ""
     phone_port: int = 8080
     discovery_timeout_s: float = 8.0
-    batch_size: int = 32
+    batch_size: int = 64
     # Controlling the recording start/saving has been flaky
     companion_recording_enabled: bool = False
 
@@ -40,6 +49,14 @@ class State:
     running: bool = False
     settings_dialog: QDialog | None = None
     device: Device | None = None
+    loop: asyncio.AbstractEventLoop | None = None
+    scene_url: str = ""
+    eyes_url: str = ""
+    gaze_url: str = ""
+    scene_queue: asyncio.Queue[VideoFrame] | None = None
+    eyes_queue: asyncio.Queue[VideoFrame] | None = None
+    gaze_queue: asyncio.Queue[EyestateEyelidDualMonoGazeData] | None = None
+    stream_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
     scene_frame_index: int = 0
     eyes_frame_index: int = 0
     offset_us: int | None = None
@@ -48,10 +65,17 @@ class State:
 
 
 def clear_state() -> None:
-    # Settings should stay persistent across runs
+    # Settings and the asyncio loop should stay persistent across runs.
     STATE.device = None
     STATE.stop_requested = False
     STATE.running = False
+    STATE.scene_url = ""
+    STATE.eyes_url = ""
+    STATE.gaze_url = ""
+    STATE.scene_queue = None
+    STATE.eyes_queue = None
+    STATE.gaze_queue = None
+    STATE.stream_tasks.clear()
     STATE.scene_frame_index = 0
     STATE.eyes_frame_index = 0
     STATE.offset_us = None
@@ -126,6 +150,11 @@ GAZE_UNITS = [
     "px",
 ]
 
+SCENE_QUEUE_MAX = 8
+EYES_QUEUE_MAX = 64
+GAZE_QUEUE_MIN = 128
+ASYNC_LOOP_SLICE_S = 0.001
+
 
 def serialise_settings(settings: Settings):
     return json.dumps(asdict(settings)).encode()
@@ -153,18 +182,43 @@ def fit_dialog_to_contents(dialog: QDialog) -> None:
     dialog.adjustSize()
 
 
-def connect_device() -> Device:
+async def connect_device() -> tuple[Device, str, str, str]:
     settings = STATE.settings
     assert settings is not None
 
     ip = settings.phone_ip.strip()
-    if ip:
-        return Device(address=ip, port=settings.phone_port)
+    device: Device | None = None
+    try:
+        if ip:
+            device = Device(address=ip, port=settings.phone_port)
+        else:
+            async with Network() as network:
+                dev_info = await network.wait_for_new_device(settings.discovery_timeout_s)
+            if dev_info is None:
+                raise RuntimeError("No Neon device found on network")
+            device = Device.from_discovered_device(dev_info)
 
-    device = discover_one_device(max_search_duration_seconds=settings.discovery_timeout_s)
-    if device is None:
-        raise RuntimeError("No Neon device found on network")
-    return device
+        status = await device.get_status()
+        scene_sensor = status.direct_world_sensor()
+        eyes_sensor = status.direct_eyes_sensor()
+        gaze_sensor = status.direct_gaze_sensor()
+
+        scene_url = scene_sensor.url if scene_sensor and scene_sensor.connected else None
+        eyes_url = eyes_sensor.url if eyes_sensor and eyes_sensor.connected else None
+        gaze_url = gaze_sensor.url if gaze_sensor and gaze_sensor.connected else None
+        if scene_url is None:
+            raise RuntimeError("Scene camera stream unavailable")
+        if eyes_url is None:
+            raise RuntimeError("Eyes camera stream unavailable")
+        if gaze_url is None:
+            raise RuntimeError("Gaze stream unavailable")
+
+        return device, scene_url, eyes_url, gaze_url
+    except Exception:
+        if device is not None:
+            with contextlib.suppress(Exception):
+                await device.close()
+        raise
 
 
 def timestamp_to_us(timestamp_unix_seconds: float, stream_name: str) -> int:
@@ -178,14 +232,12 @@ def timestamp_to_us(timestamp_unix_seconds: float, stream_name: str) -> int:
 
 
 def submit_video_frame(
-    video_frame: SimpleVideoFrame, out_port: syl.OutputPort, stream_name: str, frame_index: int
+    video_frame: VideoFrame, out_port: syl.OutputPort, stream_name: str, frame_index: int
 ) -> int:
     frame = syl.Frame()
-    frame.mat = video_frame.bgr_pixels  # already a numpy array
+    frame.mat = video_frame.bgr_buffer()
     frame.time_usec = timestamp_to_us(video_frame.timestamp_unix_seconds, stream_name)
-
     frame.index = frame_index
-
     out_port.submit(frame)
     return frame_index + 1
 
@@ -257,42 +309,122 @@ def process_gaze_datum(gaze_datum: EyestateEyelidDualMonoGazeData) -> None:
         )
 
 
-def submit_scene_frame(frame: SimpleVideoFrame) -> None:
+def submit_scene_frame(frame: VideoFrame) -> None:
     assert out_scene is not None
     STATE.scene_frame_index = submit_video_frame(
         frame, out_scene, STREAM_NAME_SCENE, STATE.scene_frame_index
     )
 
 
-def submit_eyes_frame(frame: SimpleVideoFrame) -> None:
+def submit_eyes_frame(frame: VideoFrame) -> None:
     assert out_eyes is not None
     STATE.eyes_frame_index = submit_video_frame(
         frame, out_eyes, STREAM_NAME_EYES, STATE.eyes_frame_index
     )
 
 
-def cleanup() -> None:
+def enqueue_latest(queue: asyncio.Queue[Any], item: Any) -> None:
+    while queue.full():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+    queue.put_nowait(item)
+
+
+async def stream_video_frames(url: str, queue: asyncio.Queue[VideoFrame]) -> None:
+    async for frame in receive_video_frames(url, run_loop=True):
+        enqueue_latest(queue, frame)
+
+
+async def stream_gaze_data(url: str, queue: asyncio.Queue[EyestateEyelidDualMonoGazeData]) -> None:
+    async for gaze_datum in receive_gaze_data(url, run_loop=True):
+        if not isinstance(gaze_datum, EyestateEyelidDualMonoGazeData):
+            raise RuntimeError(f"Unexpected gaze data type: {gaze_datum.__class__.__name__}")
+        enqueue_latest(queue, gaze_datum)
+
+
+def ensure_stream_tasks_healthy() -> None:
+    for task in STATE.stream_tasks:
+        if not task.done():
+            continue
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is None:
+            raise RuntimeError(f"Streaming task ended unexpectedly: {task.get_name()}")
+        raise RuntimeError(f"Streaming task failed: {task.get_name()}") from exc
+
+
+def drain_video_queue(
+    queue: asyncio.Queue[VideoFrame], submit_func: Callable[[VideoFrame], None]
+) -> None:
+    while True:
+        try:
+            frame = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        submit_func(frame)
+        del frame
+
+
+def drain_gaze_queue(queue: asyncio.Queue[EyestateEyelidDualMonoGazeData]) -> None:
+    while True:
+        try:
+            gaze_datum = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        process_gaze_datum(gaze_datum)
+
+
+async def stop_stream_tasks() -> None:
+    tasks = STATE.stream_tasks.copy()
+    STATE.stream_tasks.clear()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def cleanup_async() -> None:
+    await stop_stream_tasks()
+
     device = STATE.device
     if device is None:
-        syl.println("No device to cleanup, skipping cleanup()")
+        syl.println("No device to cleanup, skipping device cleanup")
         return
 
     settings = STATE.settings
     if settings is None:
-        syl.println("Settings not set, skipping cleanup()")
+        syl.println("Settings not set, skipping device cleanup")
         return
 
     if settings.companion_recording_enabled:
         try:
-            device.recording_stop_and_save()
+            await device.recording_stop_and_save()
         except Exception as exc:
             syl.println(f"Neon cleanup recording control failed: {exc}")
 
     try:
-        device.close()
+        await device.close()
     except Exception as exc:
         syl.println(f"Failed to close Neon device: {exc}")
 
+
+def cleanup() -> None:
+    loop = STATE.loop
+    if loop is None:
+        syl.println("No event loop to cleanup, skipping cleanup()")
+        clear_state()
+        return
+
+    try:
+        loop.run_until_complete(cleanup_async())
+    except Exception as exc:
+        syl.println(f"Cleanup failed: {exc.__class__.__name__}({exc})")
+
+    clear_state()
     syl.println("Cleanup complete")
 
 
@@ -324,7 +456,7 @@ def prepare():
 
     out_eyes = syl.get_output_port(STREAM_NAME_EYES)
     assert out_eyes is not None
-    out_eyes.set_metadata_value("framerate", 60.0)
+    out_eyes.set_metadata_value("framerate", 200.0)
     out_eyes.set_metadata_value_size("size", syl.MetaSize(384, 192))
 
     out_gaze = syl.get_output_port(STREAM_NAME_GAZE)
@@ -334,8 +466,20 @@ def prepare():
     out_gaze.set_metadata_value("data_unit", GAZE_UNITS)
 
     try:
-        device = connect_device()
+        if STATE.loop is None:
+            STATE.loop = asyncio.new_event_loop()
+            syl.println("Created asyncio loop")
+        else:
+            syl.println("Reusing asyncio loop")
+
+        device, scene_url, eyes_url, gaze_url = STATE.loop.run_until_complete(connect_device())
         STATE.device = device
+        STATE.scene_url = scene_url
+        STATE.eyes_url = eyes_url
+        STATE.gaze_url = gaze_url
+        STATE.scene_queue = asyncio.Queue(maxsize=SCENE_QUEUE_MAX)
+        STATE.eyes_queue = asyncio.Queue(maxsize=EYES_QUEUE_MAX)
+        STATE.gaze_queue = asyncio.Queue(maxsize=max(STATE.settings.batch_size * 4, GAZE_QUEUE_MIN))
         return True
     except Exception as exc:
         handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Prepare failed")
@@ -343,47 +487,63 @@ def prepare():
 
 
 def start() -> None:
+    assert STATE.loop is not None
     assert STATE.device is not None
     assert STATE.settings is not None
+    assert STATE.scene_queue is not None
+    assert STATE.eyes_queue is not None
+    assert STATE.gaze_queue is not None
 
     try:
-        STATE.device.streaming_start(STREAM_NAME_SCENE)
-        STATE.device.streaming_start(STREAM_NAME_EYES)
-        STATE.device.streaming_start(STREAM_NAME_GAZE)
+        STATE.stream_tasks = [
+            STATE.loop.create_task(
+                stream_video_frames(STATE.scene_url, STATE.scene_queue), name="scene-stream"
+            ),
+            STATE.loop.create_task(
+                stream_video_frames(STATE.eyes_url, STATE.eyes_queue), name="eyes-stream"
+            ),
+            STATE.loop.create_task(
+                stream_gaze_data(STATE.gaze_url, STATE.gaze_queue), name="gaze-stream"
+            ),
+        ]
         STATE.offset_us = -int(time.time() * 1e6)
         if STATE.settings.companion_recording_enabled:
-            _recording_id = STATE.device.recording_start()
+            _recording_id = STATE.loop.run_until_complete(STATE.device.recording_start())
     except Exception as exc:
         handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Start failed")
 
 
 def run() -> None:
     STATE.running = True
+    loop = STATE.loop
     device = STATE.device
     settings = STATE.settings
+    scene_queue = STATE.scene_queue
+    eyes_queue = STATE.eyes_queue
+    gaze_queue = STATE.gaze_queue
+    assert loop is not None
     assert device is not None
     assert settings is not None
+    assert scene_queue is not None
+    assert eyes_queue is not None
+    assert gaze_queue is not None
 
     try:
-        timeout_s = 0.002
         while not STATE.stop_requested and syl.is_running():
-            gaze_datum = device.receive_gaze_datum(timeout_s)
-            if gaze_datum is not None:
-                assert isinstance(gaze_datum, EyestateEyelidDualMonoGazeData)
-                process_gaze_datum(gaze_datum)
-
-            scene_frame = device.receive_scene_video_frame(timeout_s)
-            if scene_frame is not None:
-                submit_scene_frame(scene_frame)
-                # https://github.com/syntalos/syntalos/issues/92
-                del scene_frame
-
-            eyes_frame = device.receive_eyes_video_frame(timeout_s)
-            if eyes_frame is not None:
-                submit_eyes_frame(eyes_frame)
-                # https://github.com/syntalos/syntalos/issues/92
-                del eyes_frame
+            # Advance the async loop
+            loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_SLICE_S))
+            ensure_stream_tasks_healthy()
+            drain_gaze_queue(gaze_queue)
+            drain_video_queue(scene_queue, submit_scene_frame)
+            drain_video_queue(eyes_queue, submit_eyes_frame)
             syl.wait(1)  # give time for syntalos to call stop()
+
+        # Flush the queues
+        loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_SLICE_S * 10))
+        ensure_stream_tasks_healthy()
+        drain_gaze_queue(gaze_queue)
+        drain_video_queue(scene_queue, submit_scene_frame)
+        drain_video_queue(eyes_queue, submit_eyes_frame)
 
         # Flush pending batch
         if len(STATE.gaze_timestamps_us):
@@ -393,6 +553,7 @@ def run() -> None:
                 STATE.gaze_timestamps_us,
                 STATE.gaze_rows,
             )
+        loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_SLICE_S * 10))
     except Exception as exc:
         handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Run failed")
 

@@ -3,9 +3,10 @@
 import asyncio
 import contextlib
 import json
+import sys
 import time
-import traceback
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -26,18 +27,9 @@ from pupil_labs.realtime_api import (
 from pupil_labs.realtime_api.streaming.imu import IMUData
 from pupil_labs.realtime_api.streaming.gaze import EyestateEyelidDualMonoGazeData
 from PyQt6 import uic
-from PyQt6.QtWidgets import QDialog, QLayout
+from PyQt6.QtWidgets import QApplication, QDialog, QLayout
 
 EyeEventData = FixationEventData | FixationOnsetEventData | BlinkEventData
-
-
-def handle_fatal_exc(exc: Exception, syntalos_raise: bool, clean: bool, prefix: str = ""):
-    msg = f"{prefix}{': ' if prefix else ''}{exc.__class__.__name__}({exc})"
-    syl.println(f"{msg}\n{traceback.format_exc()}")
-    if clean:
-        cleanup()
-    if syntalos_raise:
-        syl.raise_error(msg)
 
 
 @dataclass
@@ -53,7 +45,6 @@ class Settings:
 @dataclass
 class State:
     settings: Settings | None = None
-    stop_requested: bool = False
     running: bool = False
     settings_dialog: QDialog | None = None
     device: Device | None = None
@@ -81,7 +72,6 @@ class State:
 def clear_state() -> None:
     # Settings and the asyncio loop should stay persistent across runs.
     STATE.device = None
-    STATE.stop_requested = False
     STATE.running = False
     STATE.scene_url = ""
     STATE.eyes_url = ""
@@ -104,6 +94,8 @@ def clear_state() -> None:
 
 
 STATE = State()
+App: QApplication | None = None
+MLink: syl.SyntalosLink | None = None
 out_scene: syl.OutputPort | None = None
 out_eyes: syl.OutputPort | None = None
 out_gaze: syl.OutputPort | None = None
@@ -250,7 +242,7 @@ EYES_QUEUE_MAX = 64
 GAZE_QUEUE_MIN = 128
 IMU_QUEUE_MIN = 256
 EYE_EVENTS_QUEUE_MAX = 512
-ASYNC_LOOP_ADVANCE_S = 0.001
+ASYNC_LOOP_ADVANCE_S = 0.005
 ASYNC_LOOP_WRAPUP_S = 0.200
 
 
@@ -259,18 +251,13 @@ def serialise_settings(settings: Settings):
 
 
 def deserialise_settings(settings: bytes):
-    return Settings(**json.loads(settings.decode()))
-
-
-def save_current_settings() -> None:
-    assert STATE.settings is not None
-    syl.save_settings(serialise_settings(STATE.settings))
+    return Settings(**json.loads(settings.decode()))  # pyright: ignore[reportAny]
 
 
 def close_settings_dialog() -> None:
     dialog = STATE.settings_dialog
     if dialog is not None:
-        dialog.close()
+        _ = dialog.close()
 
 
 def fit_dialog_to_contents(dialog: QDialog) -> None:
@@ -280,7 +267,9 @@ def fit_dialog_to_contents(dialog: QDialog) -> None:
     dialog.adjustSize()
 
 
-def force_tcp_rtsp_url(url: str) -> str:
+def force_tcp_rtsp_url(url: str, audioenable: bool = False) -> str:
+    # By default it enables the audio
+    url = url.replace("audioenable=on", "audioenable=" + ("on" if audioenable else "off"))
     if url.startswith("rtsp://"):
         # force RTSP over TCP interleaving, this prevents frames corruption (e.g. green pixel chunks)
         return "rtspt://" + url[len("rtsp://") :]
@@ -352,7 +341,7 @@ def timestamp_to_us(timestamp_unix_seconds: float, stream_name: str) -> int:
     time_us = ts_us + STATE.offset_us
     # From time to time the Neon App on the Android crashes and the frame arrives with negative timestamp
     if time_us <= 0:
-        syl.println(f"Non-positive {time_us = }, {stream_name = }, {timestamp_unix_seconds = }")
+        raise ValueError(f"Non-positive {time_us=} for {stream_name=} ({timestamp_unix_seconds=})")
     return time_us
 
 
@@ -361,7 +350,7 @@ def timestamp_ns_to_us(timestamp_unix_ns: int, stream_name: str) -> float:
     time_ns = timestamp_unix_ns + STATE.offset_us * 1000
     time_us = time_ns / 1000.0
     if time_us <= 0:
-        syl.println(f"Non-positive {time_us = }, {stream_name = }, {timestamp_unix_ns = }")
+        raise ValueError(f"Non-positive {time_us=} for {stream_name=}, ({timestamp_unix_ns=})")
     return time_us
 
 
@@ -637,9 +626,9 @@ async def stop_stream_tasks() -> None:
     STATE.stream_tasks.clear()
     for task in tasks:
         if not task.done():
-            task.cancel()
+            _ = task.cancel()
     if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        _ = await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def cleanup_async() -> None:
@@ -647,31 +636,30 @@ async def cleanup_async() -> None:
 
     device = STATE.device
     if device is None:
-        syl.println("No device to cleanup, skipping device cleanup")
+        print("No device to cleanup, skipping device cleanup")
         return
 
     settings = STATE.settings
     if settings is None:
-        syl.println("Settings not set, skipping device cleanup")
+        print("Settings not set, skipping device cleanup")
         return
 
     if settings.companion_recording_enabled:
         try:
             await device.recording_stop_and_save()
         except Exception as exc:
-            syl.println(f"Neon cleanup recording control failed: {exc}")
+            print(f"Neon cleanup recording control failed: {exc}")
 
     try:
         await device.close()
     except Exception as exc:
-        syl.println(f"Failed to close Neon device: {exc}")
+        print(f"Failed to close Neon device: {exc}")
 
 
 def cleanup() -> None:
     loop = STATE.loop
     if loop is None:
-        syl.println("No event loop to cleanup, skipping cleanup()")
-        clear_state()
+        print("No event loop to cleanup, skipping cleanup()")
         return
 
     try:
@@ -680,19 +668,23 @@ def cleanup() -> None:
         # This pervents a series of errors being printed when quiting Syntalos.
         loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_WRAPUP_S))
     except Exception as exc:
-        syl.println(f"Cleanup failed: {exc.__class__.__name__}({exc})")
-
-    clear_state()
-    syl.println("Cleanup complete")
+        print(f"Cleanup failed: {exc.__class__.__name__}({exc})")
+    print("Cleanup done")
 
 
-def register_ports() -> None:
-    syl.register_output_port(STREAM_NAME_SCENE, "Scene Camera", "Frame")
-    syl.register_output_port(STREAM_NAME_EYES, "Eyes Camera", "Frame")
-    syl.register_output_port(STREAM_NAME_GAZE, "Gaze", "FloatSignalBlock")
-    syl.register_output_port(STREAM_NAME_IMU, "IMU", "FloatSignalBlock")
-    syl.register_output_port(STREAM_NAME_EVENTS_COMPLETE, "Events Complete", "FloatSignalBlock")
-    syl.register_output_port(STREAM_NAME_EVENTS_SIMPLE, "Events Simple", "FloatSignalBlock")
+def register_ports(mlink: syl.SyntalosLink) -> None:
+    global out_scene, out_eyes, out_gaze, out_imu, out_eye_events_complete, out_eye_events_simple
+
+    out_scene = mlink.register_output_port(STREAM_NAME_SCENE, "Scene", data_type=syl.DataType.Frame)
+    out_eyes = mlink.register_output_port(STREAM_NAME_EYES, "Eyes", syl.DataType.Frame)
+    out_gaze = mlink.register_output_port(STREAM_NAME_GAZE, "Gaze", syl.DataType.FloatSignalBlock)
+    out_imu = mlink.register_output_port(STREAM_NAME_IMU, "IMU", syl.DataType.FloatSignalBlock)
+    out_eye_events_complete = mlink.register_output_port(
+        STREAM_NAME_EVENTS_COMPLETE, "Events Complete", syl.DataType.FloatSignalBlock
+    )
+    out_eye_events_simple = mlink.register_output_port(
+        STREAM_NAME_EVENTS_SIMPLE, "Events Simple", syl.DataType.FloatSignalBlock
+    )
 
 
 # # ####################################################################################
@@ -701,74 +693,58 @@ def register_ports() -> None:
 
 
 def prepare():
-    global out_scene, out_eyes, out_gaze, out_imu, out_eye_events_complete, out_eye_events_simple
-
     clear_state()
-    save_current_settings()
     close_settings_dialog()
     if STATE.settings is None:
-        syl.println("Settings not set, aborting prepare()")
-        return False
+        # happens when adding the module to the board first time and starting right away
+        STATE.settings = Settings()
 
-    out_scene = syl.get_output_port(STREAM_NAME_SCENE)
     assert out_scene is not None
     out_scene.set_metadata_value("framerate", 30.0)
     out_scene.set_metadata_value_size("size", syl.MetaSize(1600, 1200))
 
-    out_eyes = syl.get_output_port(STREAM_NAME_EYES)
     assert out_eyes is not None
     out_eyes.set_metadata_value("framerate", 200.0)
     out_eyes.set_metadata_value_size("size", syl.MetaSize(384, 192))
 
-    out_gaze = syl.get_output_port(STREAM_NAME_GAZE)
     assert out_gaze is not None
     out_gaze.set_metadata_value("signal_names", GAZE_SIGNAL_NAMES)
     out_gaze.set_metadata_value("time_unit", "microseconds")
     out_gaze.set_metadata_value("data_unit", GAZE_UNITS)
 
-    out_imu = syl.get_output_port(STREAM_NAME_IMU)
     assert out_imu is not None
     out_imu.set_metadata_value("signal_names", IMU_SIGNAL_NAMES)
     out_imu.set_metadata_value("time_unit", "microseconds")
     out_imu.set_metadata_value("data_unit", IMU_UNITS)
 
-    out_eye_events_complete = syl.get_output_port(STREAM_NAME_EVENTS_COMPLETE)
     assert out_eye_events_complete is not None
     out_eye_events_complete.set_metadata_value("signal_names", EYE_EVENTS_COMPLETE_SIGNAL_NAMES)
     out_eye_events_complete.set_metadata_value("time_unit", "microseconds")
     out_eye_events_complete.set_metadata_value("data_unit", EYE_EVENTS_COMPLETE_UNITS)
 
-    out_eye_events_simple = syl.get_output_port(STREAM_NAME_EVENTS_SIMPLE)
     assert out_eye_events_simple is not None
     out_eye_events_simple.set_metadata_value("signal_names", EYE_EVENTS_SIMPLE_SIGNAL_NAMES)
     out_eye_events_simple.set_metadata_value("time_unit", "microseconds")
     out_eye_events_simple.set_metadata_value("data_unit", EYE_EVENTS_SIMPLE_UNITS)
 
-    try:
-        if STATE.loop is None:
-            STATE.loop = asyncio.new_event_loop()
-            syl.println("Created asyncio loop")
-        else:
-            syl.println("Reusing asyncio loop")
+    if STATE.loop is None:
+        STATE.loop = asyncio.new_event_loop()
 
-        device, scene_url, eyes_url, gaze_url, imu_url, eye_events_url = (
-            STATE.loop.run_until_complete(connect_device())
-        )
-        STATE.device = device
-        STATE.scene_url = scene_url
-        STATE.eyes_url = eyes_url
-        STATE.gaze_url = gaze_url
-        STATE.imu_url = imu_url
-        STATE.eye_events_url = eye_events_url
-        STATE.scene_queue = asyncio.Queue(maxsize=SCENE_QUEUE_MAX)
-        STATE.eyes_queue = asyncio.Queue(maxsize=EYES_QUEUE_MAX)
-        STATE.gaze_queue = asyncio.Queue(maxsize=max(STATE.settings.batch_size * 4, GAZE_QUEUE_MIN))
-        STATE.imu_queue = asyncio.Queue(maxsize=max(STATE.settings.batch_size * 4, IMU_QUEUE_MIN))
-        STATE.eye_events_queue = asyncio.Queue(maxsize=EYE_EVENTS_QUEUE_MAX)
-        return True
-    except Exception as exc:
-        handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Prepare failed")
-        return False
+    device, scene_url, eyes_url, gaze_url, imu_url, eye_events_url = STATE.loop.run_until_complete(
+        connect_device()
+    )
+    STATE.device = device
+    STATE.scene_url = scene_url
+    STATE.eyes_url = eyes_url
+    STATE.gaze_url = gaze_url
+    STATE.imu_url = imu_url
+    STATE.eye_events_url = eye_events_url
+    STATE.scene_queue = asyncio.Queue(maxsize=SCENE_QUEUE_MAX)
+    STATE.eyes_queue = asyncio.Queue(maxsize=EYES_QUEUE_MAX)
+    STATE.gaze_queue = asyncio.Queue(maxsize=max(STATE.settings.batch_size * 4, GAZE_QUEUE_MIN))
+    STATE.imu_queue = asyncio.Queue(maxsize=max(STATE.settings.batch_size * 4, IMU_QUEUE_MIN))
+    STATE.eye_events_queue = asyncio.Queue(maxsize=EYE_EVENTS_QUEUE_MAX)
+    return True
 
 
 def start() -> None:
@@ -781,89 +757,85 @@ def start() -> None:
     assert STATE.imu_queue is not None
     assert STATE.eye_events_queue is not None
 
-    try:
-        STATE.stream_tasks = [
-            STATE.loop.create_task(
-                stream_video_frames(STATE.scene_url, STATE.scene_queue), name="scene-stream"
-            ),
-            STATE.loop.create_task(
-                stream_video_frames(STATE.eyes_url, STATE.eyes_queue), name="eyes-stream"
-            ),
-            STATE.loop.create_task(
-                stream_gaze_data(STATE.gaze_url, STATE.gaze_queue), name="gaze-stream"
-            ),
-            STATE.loop.create_task(
-                stream_imu_data(STATE.imu_url, STATE.imu_queue), name="imu-stream"
-            ),
-            STATE.loop.create_task(
-                stream_eye_events_data(STATE.eye_events_url, STATE.eye_events_queue),
-                name="eye-events-stream",
-            ),
-        ]
-        STATE.offset_us = -int(time.time() * 1e6)
-        if STATE.settings.companion_recording_enabled:
-            _recording_id = STATE.loop.run_until_complete(STATE.device.recording_start())
-    except Exception as exc:
-        handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Start failed")
-
-
-def run() -> None:
+    STATE.stream_tasks = [
+        STATE.loop.create_task(
+            stream_video_frames(STATE.scene_url, STATE.scene_queue), name="scene-stream"
+        ),
+        STATE.loop.create_task(
+            stream_video_frames(STATE.eyes_url, STATE.eyes_queue), name="eyes-stream"
+        ),
+        STATE.loop.create_task(
+            stream_gaze_data(STATE.gaze_url, STATE.gaze_queue), name="gaze-stream"
+        ),
+        STATE.loop.create_task(stream_imu_data(STATE.imu_url, STATE.imu_queue), name="imu-stream"),
+        STATE.loop.create_task(
+            stream_eye_events_data(STATE.eye_events_url, STATE.eye_events_queue),
+            name="eye-events-stream",
+        ),
+    ]
+    STATE.offset_us = -int(time.time() * 1e6)
+    if STATE.settings.companion_recording_enabled:
+        _recording_id = STATE.loop.run_until_complete(STATE.device.recording_start())
     STATE.running = True
+
+
+def event_loop_tick() -> None:
+    if App is not None:
+        App.processEvents()
+
+    if not STATE.running:
+        return
+
     loop = STATE.loop
-    device = STATE.device
-    settings = STATE.settings
+    if loop is None:
+        return
+
+    loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_ADVANCE_S))
+
     scene_queue = STATE.scene_queue
     eyes_queue = STATE.eyes_queue
     gaze_queue = STATE.gaze_queue
     imu_queue = STATE.imu_queue
     eye_events_queue = STATE.eye_events_queue
-    assert loop is not None
-    assert device is not None
-    assert settings is not None
+
     assert scene_queue is not None
     assert eyes_queue is not None
     assert gaze_queue is not None
     assert imu_queue is not None
     assert eye_events_queue is not None
 
-    try:
-        while not STATE.stop_requested and syl.is_running():
-            # Advance the async loop
-            loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_ADVANCE_S))
-            ensure_stream_tasks_healthy()
-            drain_gaze_queue(gaze_queue)
-            drain_imu_queue(imu_queue)
-            drain_eye_events_queue(eye_events_queue)
-            drain_video_queue(scene_queue, submit_scene_frame)
-            drain_video_queue(eyes_queue, submit_eyes_frame)
-            syl.wait(1)  # give time for syntalos to call stop()
-    except Exception as exc:
-        handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Run failed")
+    ensure_stream_tasks_healthy()
+    drain_gaze_queue(gaze_queue)
+    drain_imu_queue(imu_queue)
+    drain_eye_events_queue(eye_events_queue)
+    drain_video_queue(scene_queue, submit_scene_frame)
+    drain_video_queue(eyes_queue, submit_eyes_frame)
 
-    # NB no flushing or "remaining" data here because streams are stopped inside cleanup!
 
+def stop() -> None:
     cleanup()
     STATE.running = False
 
 
-def stop() -> None:
-    STATE.stop_requested = True
-    # In case other modules trigger a premature stop(), we need to call cleanup() here
-    if not STATE.running:
-        cleanup()
-
-
-def set_settings(settings: bytes) -> None:
-    if settings:
-        try:
-            STATE.settings = deserialise_settings(settings)
-        except Exception as exc:
-            msg = f"Failed to parse settings: {exc.__class__.__name__}({exc})"
-            syl.println(msg)
-            syl.raise_error(msg)
+def load_settings(settings: bytes, _base_dir: Path) -> bool:
+    if not settings:
+        if STATE.settings is None:
             STATE.settings = Settings()
-    elif STATE.settings is None:
+        return True
+
+    try:
+        STATE.settings = deserialise_settings(settings)
+    except Exception:
         STATE.settings = Settings()
+        raise
+
+    return True
+
+
+def save_settings(_base_dir: Path) -> bytes:
+    if STATE.settings is None:
+        STATE.settings = Settings()
+    return serialise_settings(STATE.settings)
 
 
 # # ####################################################################################
@@ -871,21 +843,18 @@ def set_settings(settings: bytes) -> None:
 # # ####################################################################################
 
 
-UI_FILE_PATH = "settings.ui"
+UI_FILE_PATH = Path(__file__).resolve().with_name("settings.ui")
 
 
-def show_settings(settings: bytes) -> None:
-    # Showing the settings UI while running prevents the run() loop from advancing.
+def show_settings() -> None:
+    # Showing the settings UI while running prevents the module event loop from advancing.
     # Keep it simple: no settings UI while running.
-    if STATE.running or syl.is_running():
-        syl.println("Cannot show settings while running")
+    if STATE.running or (MLink is not None and MLink.is_running):
+        print("Cannot show settings while running")
         return
 
-    if not settings:
-        if STATE.settings is None:
-            STATE.settings = Settings()
-    else:
-        STATE.settings = deserialise_settings(settings)
+    if STATE.settings is None:
+        STATE.settings = Settings()
 
     assert STATE.settings is not None
 
@@ -910,7 +879,6 @@ def show_settings(settings: bytes) -> None:
         STATE.settings.phone_port = dialog.phonePortSpinBox.value()
         STATE.settings.discovery_timeout_s = dialog.discoveryTimeoutSpinBox.value()
         STATE.settings.companion_recording_enabled = dialog.companionRecordingCheckBox.isChecked()
-        save_current_settings()
 
     def cleanup_dialog():
         STATE.settings_dialog = None
@@ -926,8 +894,23 @@ def show_settings(settings: bytes) -> None:
     dialog.activateWindow()
 
 
-# Register settings callback (called when settings dialog is shown)
-syl.call_on_show_settings(show_settings)
+def main() -> int:
+    global App, MLink
+    App = QApplication(sys.argv)
+    App.setQuitOnLastWindowClosed(False)
+    MLink = syl.init_link(rename_process=True)
+    register_ports(MLink)
+    MLink.on_prepare = prepare
+    MLink.on_start = start
+    MLink.on_stop = stop
+    MLink.on_show_settings = show_settings
+    MLink.on_save_settings = save_settings
+    MLink.on_load_settings = load_settings
+    MLink.await_data_forever(event_loop_tick)
+    if STATE.running:
+        cleanup()
+    return 0
 
-# Register ports at module level so Syntalos can restore project connections.
-register_ports()
+
+if __name__ == "__main__":
+    raise SystemExit(main())

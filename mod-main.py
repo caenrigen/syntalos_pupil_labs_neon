@@ -12,15 +12,23 @@ import numpy as np
 import syntalos_mlink as syl
 
 from pupil_labs.realtime_api import (
+    BlinkEventData,
     Device,
+    FixationEventData,
+    FixationOnsetEventData,
     Network,
     VideoFrame,
+    receive_eye_events_data,
     receive_gaze_data,
+    receive_imu_data,
     receive_video_frames,
 )
+from pupil_labs.realtime_api.streaming.imu import IMUData
 from pupil_labs.realtime_api.streaming.gaze import EyestateEyelidDualMonoGazeData
 from PyQt6 import uic
 from PyQt6.QtWidgets import QDialog, QLayout
+
+EyeEventData = FixationEventData | FixationOnsetEventData | BlinkEventData
 
 
 def handle_fatal_exc(exc: Exception, syntalos_raise: bool, clean: bool, prefix: str = ""):
@@ -53,15 +61,21 @@ class State:
     scene_url: str = ""
     eyes_url: str = ""
     gaze_url: str = ""
+    imu_url: str = ""
+    eye_events_url: str = ""
     scene_queue: asyncio.Queue[VideoFrame] | None = None
     eyes_queue: asyncio.Queue[VideoFrame] | None = None
     gaze_queue: asyncio.Queue[EyestateEyelidDualMonoGazeData] | None = None
+    imu_queue: asyncio.Queue[IMUData] | None = None
+    eye_events_queue: asyncio.Queue[EyeEventData] | None = None
     stream_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
     scene_frame_index: int = 0
     eyes_frame_index: int = 0
     offset_us: int | None = None
     gaze_timestamps_us: list[int] = field(default_factory=list)
     gaze_rows: list[list[float]] = field(default_factory=list)
+    imu_timestamps_us: list[int] = field(default_factory=list)
+    imu_rows: list[list[float]] = field(default_factory=list)
 
 
 def clear_state() -> None:
@@ -72,25 +86,35 @@ def clear_state() -> None:
     STATE.scene_url = ""
     STATE.eyes_url = ""
     STATE.gaze_url = ""
+    STATE.imu_url = ""
+    STATE.eye_events_url = ""
     STATE.scene_queue = None
     STATE.eyes_queue = None
     STATE.gaze_queue = None
+    STATE.imu_queue = None
+    STATE.eye_events_queue = None
     STATE.stream_tasks.clear()
     STATE.scene_frame_index = 0
     STATE.eyes_frame_index = 0
     STATE.offset_us = None
     STATE.gaze_timestamps_us.clear()
     STATE.gaze_rows.clear()
+    STATE.imu_timestamps_us.clear()
+    STATE.imu_rows.clear()
 
 
 STATE = State()
 out_scene: syl.OutputPort | None = None
 out_eyes: syl.OutputPort | None = None
 out_gaze: syl.OutputPort | None = None
+out_imu: syl.OutputPort | None = None
+out_eye_events: syl.OutputPort | None = None
 
 STREAM_NAME_SCENE = "world"
 STREAM_NAME_EYES = "eyes"
 STREAM_NAME_GAZE = "gaze"
+STREAM_NAME_IMU = "imu"
+STREAM_NAME_EYE_EVENTS = "eye_events"
 GAZE_SIGNAL_NAMES = [
     "x",
     "y",
@@ -149,10 +173,53 @@ GAZE_UNITS = [
     "px",
     "px",
 ]
+IMU_SIGNAL_NAMES = [
+    "gyro_x",
+    "gyro_y",
+    "gyro_z",
+    "accel_x",
+    "accel_y",
+    "accel_z",
+    "quaternion_x",
+    "quaternion_y",
+    "quaternion_z",
+    "quaternion_w",
+]
+IMU_UNITS = [
+    "deg/s",
+    "deg/s",
+    "deg/s",
+    "m/s^2",
+    "m/s^2",
+    "m/s^2",
+    "a.u.",
+    "a.u.",
+    "a.u.",
+    "a.u.",
+]
+EYE_EVENTS_TABLE_HEADER = [
+    "timestamp_us",
+    "event_type",
+    "event_label",
+    "start_time_ns",
+    "end_time_ns",
+    "start_gaze_x",
+    "start_gaze_y",
+    "end_gaze_x",
+    "end_gaze_y",
+    "mean_gaze_x",
+    "mean_gaze_y",
+    "amplitude_pixels",
+    "amplitude_angle_deg",
+    "mean_velocity",
+    "max_velocity",
+]
 
 SCENE_QUEUE_MAX = 8
 EYES_QUEUE_MAX = 64
 GAZE_QUEUE_MIN = 128
+IMU_QUEUE_MIN = 256
+EYE_EVENTS_QUEUE_MAX = 512
 ASYNC_LOOP_ADVANCE_S = 0.001
 ASYNC_LOOP_WRAPUP_S = 0.200
 
@@ -192,7 +259,7 @@ def force_tcp_rtsp_url(url: str) -> str:
     raise RuntimeError(f"Unsupported stream URL scheme: {url}")
 
 
-async def connect_device() -> tuple[Device, str, str, str]:
+async def connect_device() -> tuple[Device, str, str, str, str, str]:
     settings = STATE.settings
     assert settings is not None
 
@@ -212,22 +279,36 @@ async def connect_device() -> tuple[Device, str, str, str]:
         scene_sensor = status.direct_world_sensor()
         eyes_sensor = status.direct_eyes_sensor()
         gaze_sensor = status.direct_gaze_sensor()
+        imu_sensor = status.direct_imu_sensor()
+        eye_events_sensor = status.direct_eye_events_sensor()
 
         scene_url = scene_sensor.url if scene_sensor and scene_sensor.connected else None
         eyes_url = eyes_sensor.url if eyes_sensor and eyes_sensor.connected else None
         gaze_url = gaze_sensor.url if gaze_sensor and gaze_sensor.connected else None
+        imu_url = imu_sensor.url if imu_sensor and imu_sensor.connected else None
+        eye_events_url = (
+            eye_events_sensor.url if eye_events_sensor and eye_events_sensor.connected else None
+        )
         if scene_url is None:
             raise RuntimeError("Scene camera stream unavailable")
         if eyes_url is None:
             raise RuntimeError("Eyes camera stream unavailable")
         if gaze_url is None:
             raise RuntimeError("Gaze stream unavailable")
+        if imu_url is None:
+            raise RuntimeError("IMU stream unavailable")
+        if eye_events_url is None:
+            raise RuntimeError(
+                "Eye events stream unavailable. Requires Neon Companion 2.9+ with Compute fixations enabled."
+            )
 
         scene_url = force_tcp_rtsp_url(scene_url)
         eyes_url = force_tcp_rtsp_url(eyes_url)
         gaze_url = force_tcp_rtsp_url(gaze_url)
+        imu_url = force_tcp_rtsp_url(imu_url)
+        eye_events_url = force_tcp_rtsp_url(eye_events_url)
 
-        return device, scene_url, eyes_url, gaze_url
+        return device, scene_url, eyes_url, gaze_url, imu_url, eye_events_url
     except Exception:
         if device is not None:
             with contextlib.suppress(Exception):
@@ -323,6 +404,87 @@ def process_gaze_datum(gaze_datum: EyestateEyelidDualMonoGazeData) -> None:
         )
 
 
+def process_imu_datum(imu_datum: IMUData) -> None:
+    assert STATE.settings is not None
+    STATE.imu_timestamps_us.append(
+        timestamp_to_us(imu_datum.timestamp_unix_seconds, STREAM_NAME_IMU)
+    )
+    STATE.imu_rows.append(
+        [
+            imu_datum.gyro_data.x,
+            imu_datum.gyro_data.y,
+            imu_datum.gyro_data.z,
+            imu_datum.accel_data.x,
+            imu_datum.accel_data.y,
+            imu_datum.accel_data.z,
+            imu_datum.quaternion.x,
+            imu_datum.quaternion.y,
+            imu_datum.quaternion.z,
+            imu_datum.quaternion.w,
+        ]
+    )
+    if len(STATE.imu_timestamps_us) >= STATE.settings.batch_size:
+        assert out_imu is not None
+        submit_float_block(
+            out_imu,
+            STATE.imu_timestamps_us,
+            STATE.imu_rows,
+        )
+
+
+def eye_event_label(event_type: int) -> str:
+    if event_type == 0:
+        return "saccade"
+    if event_type == 1:
+        return "fixation"
+    if event_type == 2:
+        return "saccade_onset"
+    if event_type == 3:
+        return "fixation_onset"
+    if event_type == 4:
+        return "blink"
+    return f"unknown_{event_type}"
+
+
+def submit_eye_event(event: EyeEventData) -> None:
+    assert out_eye_events is not None
+
+    row: list[Any] = [
+        timestamp_to_us(event.rtp_ts_unix_seconds, STREAM_NAME_EYE_EVENTS),
+        event.event_type,
+        eye_event_label(event.event_type),
+        event.start_time_ns,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ]
+    if isinstance(event, FixationEventData):
+        row[4] = event.end_time_ns
+        row[5] = event.start_gaze_x
+        row[6] = event.start_gaze_y
+        row[7] = event.end_gaze_x
+        row[8] = event.end_gaze_y
+        row[9] = event.mean_gaze_x
+        row[10] = event.mean_gaze_y
+        row[11] = event.amplitude_pixels
+        row[12] = event.amplitude_angle_deg
+        row[13] = event.mean_velocity
+        row[14] = event.max_velocity
+    elif isinstance(event, BlinkEventData):
+        row[4] = event.end_time_ns
+    elif not isinstance(event, FixationOnsetEventData):
+        raise RuntimeError(f"Unexpected eye event data type: {event.__class__.__name__}")
+    out_eye_events.submit(row)
+
+
 def submit_scene_frame(frame: VideoFrame) -> None:
     assert out_scene is not None
     STATE.scene_frame_index = submit_video_frame(
@@ -358,6 +520,16 @@ async def stream_gaze_data(url: str, queue: asyncio.Queue[EyestateEyelidDualMono
         enqueue_latest(queue, gaze_datum)
 
 
+async def stream_imu_data(url: str, queue: asyncio.Queue[IMUData]) -> None:
+    async for imu_datum in receive_imu_data(url, run_loop=True):
+        enqueue_latest(queue, imu_datum)
+
+
+async def stream_eye_events_data(url: str, queue: asyncio.Queue[EyeEventData]) -> None:
+    async for eye_event in receive_eye_events_data(url, run_loop=True):
+        await queue.put(eye_event)
+
+
 def ensure_stream_tasks_healthy() -> None:
     for task in STATE.stream_tasks:
         if not task.done():
@@ -389,6 +561,24 @@ def drain_gaze_queue(queue: asyncio.Queue[EyestateEyelidDualMonoGazeData]) -> No
         except asyncio.QueueEmpty:
             break
         process_gaze_datum(gaze_datum)
+
+
+def drain_imu_queue(queue: asyncio.Queue[IMUData]) -> None:
+    while True:
+        try:
+            imu_datum = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        process_imu_datum(imu_datum)
+
+
+def drain_eye_events_queue(queue: asyncio.Queue[EyeEventData]) -> None:
+    while True:
+        try:
+            eye_event = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        submit_eye_event(eye_event)
 
 
 async def stop_stream_tasks() -> None:
@@ -449,6 +639,8 @@ def register_ports() -> None:
     syl.register_output_port(STREAM_NAME_SCENE, "Scene Camera", "Frame")
     syl.register_output_port(STREAM_NAME_EYES, "Eyes Camera", "Frame")
     syl.register_output_port(STREAM_NAME_GAZE, "Gaze", "FloatSignalBlock")
+    syl.register_output_port(STREAM_NAME_IMU, "IMU", "FloatSignalBlock")
+    syl.register_output_port(STREAM_NAME_EYE_EVENTS, "Eye Events", "TableRow")
 
 
 # # ####################################################################################
@@ -457,7 +649,7 @@ def register_ports() -> None:
 
 
 def prepare():
-    global out_scene, out_eyes, out_gaze
+    global out_scene, out_eyes, out_gaze, out_imu, out_eye_events
 
     clear_state()
     save_current_settings()
@@ -482,6 +674,16 @@ def prepare():
     out_gaze.set_metadata_value("time_unit", "microseconds")
     out_gaze.set_metadata_value("data_unit", GAZE_UNITS)
 
+    out_imu = syl.get_output_port(STREAM_NAME_IMU)
+    assert out_imu is not None
+    out_imu.set_metadata_value("signal_names", IMU_SIGNAL_NAMES)
+    out_imu.set_metadata_value("time_unit", "microseconds")
+    out_imu.set_metadata_value("data_unit", IMU_UNITS)
+
+    out_eye_events = syl.get_output_port(STREAM_NAME_EYE_EVENTS)
+    assert out_eye_events is not None
+    out_eye_events.set_metadata_value("table_header", EYE_EVENTS_TABLE_HEADER)
+
     try:
         if STATE.loop is None:
             STATE.loop = asyncio.new_event_loop()
@@ -489,14 +691,20 @@ def prepare():
         else:
             syl.println("Reusing asyncio loop")
 
-        device, scene_url, eyes_url, gaze_url = STATE.loop.run_until_complete(connect_device())
+        device, scene_url, eyes_url, gaze_url, imu_url, eye_events_url = (
+            STATE.loop.run_until_complete(connect_device())
+        )
         STATE.device = device
         STATE.scene_url = scene_url
         STATE.eyes_url = eyes_url
         STATE.gaze_url = gaze_url
+        STATE.imu_url = imu_url
+        STATE.eye_events_url = eye_events_url
         STATE.scene_queue = asyncio.Queue(maxsize=SCENE_QUEUE_MAX)
         STATE.eyes_queue = asyncio.Queue(maxsize=EYES_QUEUE_MAX)
         STATE.gaze_queue = asyncio.Queue(maxsize=max(STATE.settings.batch_size * 4, GAZE_QUEUE_MIN))
+        STATE.imu_queue = asyncio.Queue(maxsize=max(STATE.settings.batch_size * 4, IMU_QUEUE_MIN))
+        STATE.eye_events_queue = asyncio.Queue(maxsize=EYE_EVENTS_QUEUE_MAX)
         return True
     except Exception as exc:
         handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Prepare failed")
@@ -510,6 +718,8 @@ def start() -> None:
     assert STATE.scene_queue is not None
     assert STATE.eyes_queue is not None
     assert STATE.gaze_queue is not None
+    assert STATE.imu_queue is not None
+    assert STATE.eye_events_queue is not None
 
     try:
         STATE.stream_tasks = [
@@ -521,6 +731,13 @@ def start() -> None:
             ),
             STATE.loop.create_task(
                 stream_gaze_data(STATE.gaze_url, STATE.gaze_queue), name="gaze-stream"
+            ),
+            STATE.loop.create_task(
+                stream_imu_data(STATE.imu_url, STATE.imu_queue), name="imu-stream"
+            ),
+            STATE.loop.create_task(
+                stream_eye_events_data(STATE.eye_events_url, STATE.eye_events_queue),
+                name="eye-events-stream",
             ),
         ]
         STATE.offset_us = -int(time.time() * 1e6)
@@ -538,12 +755,16 @@ def run() -> None:
     scene_queue = STATE.scene_queue
     eyes_queue = STATE.eyes_queue
     gaze_queue = STATE.gaze_queue
+    imu_queue = STATE.imu_queue
+    eye_events_queue = STATE.eye_events_queue
     assert loop is not None
     assert device is not None
     assert settings is not None
     assert scene_queue is not None
     assert eyes_queue is not None
     assert gaze_queue is not None
+    assert imu_queue is not None
+    assert eye_events_queue is not None
 
     try:
         while not STATE.stop_requested and syl.is_running():
@@ -551,11 +772,34 @@ def run() -> None:
             loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_ADVANCE_S))
             ensure_stream_tasks_healthy()
             drain_gaze_queue(gaze_queue)
+            drain_imu_queue(imu_queue)
+            drain_eye_events_queue(eye_events_queue)
             drain_video_queue(scene_queue, submit_scene_frame)
             drain_video_queue(eyes_queue, submit_eyes_frame)
             syl.wait(1)  # give time for syntalos to call stop()
     except Exception as exc:
         handle_fatal_exc(exc, syntalos_raise=True, clean=True, prefix="Run failed")
+
+    drain_gaze_queue(gaze_queue)
+    drain_imu_queue(imu_queue)
+    drain_eye_events_queue(eye_events_queue)
+    drain_video_queue(scene_queue, submit_scene_frame)
+    drain_video_queue(eyes_queue, submit_eyes_frame)
+
+    if len(STATE.gaze_timestamps_us):
+        assert out_gaze is not None
+        submit_float_block(
+            out_gaze,
+            STATE.gaze_timestamps_us,
+            STATE.gaze_rows,
+        )
+    if len(STATE.imu_timestamps_us):
+        assert out_imu is not None
+        submit_float_block(
+            out_imu,
+            STATE.imu_timestamps_us,
+            STATE.imu_rows,
+        )
 
     cleanup()
     STATE.running = False

@@ -116,8 +116,8 @@ STREAM_NAME_EYES = "eyes"
 STREAM_NAME_GAZE = "gaze"
 STREAM_NAME_IMU = "imu"
 STREAM_NAME_EYE_EVENTS = "eye_events"
-STREAM_NAME_EYE_EVENTS_COMPLETE = "eye_events_complete"
-STREAM_NAME_EYE_EVENTS_SIMPLE = "eye_events_simple"
+STREAM_NAME_EVENTS_COMPLETE = "eye_events_complete"
+STREAM_NAME_EVENTS_SIMPLE = "eye_events_simple"
 GAZE_SIGNAL_NAMES = [
     "x",
     "y",
@@ -691,8 +691,8 @@ def register_ports() -> None:
     syl.register_output_port(STREAM_NAME_EYES, "Eyes Camera", "Frame")
     syl.register_output_port(STREAM_NAME_GAZE, "Gaze", "FloatSignalBlock")
     syl.register_output_port(STREAM_NAME_IMU, "IMU", "FloatSignalBlock")
-    syl.register_output_port(STREAM_NAME_EYE_EVENTS_COMPLETE, "Events Complete", "FloatSignalBlock")
-    syl.register_output_port(STREAM_NAME_EYE_EVENTS_SIMPLE, "Events Simple", "FloatSignalBlock")
+    syl.register_output_port(STREAM_NAME_EVENTS_COMPLETE, "Events Complete", "FloatSignalBlock")
+    syl.register_output_port(STREAM_NAME_EVENTS_SIMPLE, "Events Simple", "FloatSignalBlock")
 
 
 # # ####################################################################################
@@ -732,13 +732,13 @@ def prepare():
     out_imu.set_metadata_value("time_unit", "microseconds")
     out_imu.set_metadata_value("data_unit", IMU_UNITS)
 
-    out_eye_events_complete = syl.get_output_port(STREAM_NAME_EYE_EVENTS_COMPLETE)
+    out_eye_events_complete = syl.get_output_port(STREAM_NAME_EVENTS_COMPLETE)
     assert out_eye_events_complete is not None
     out_eye_events_complete.set_metadata_value("signal_names", EYE_EVENTS_COMPLETE_SIGNAL_NAMES)
     out_eye_events_complete.set_metadata_value("time_unit", "microseconds")
     out_eye_events_complete.set_metadata_value("data_unit", EYE_EVENTS_COMPLETE_UNITS)
 
-    out_eye_events_simple = syl.get_output_port(STREAM_NAME_EYE_EVENTS_SIMPLE)
+    out_eye_events_simple = syl.get_output_port(STREAM_NAME_EVENTS_SIMPLE)
     assert out_eye_events_simple is not None
     out_eye_events_simple.set_metadata_value("signal_names", EYE_EVENTS_SIMPLE_SIGNAL_NAMES)
     out_eye_events_simple.set_metadata_value("time_unit", "microseconds")

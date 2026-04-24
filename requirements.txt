@@ -4,3 +4,6 @@
 # My https://github.com/pupil-labs/pl-realtime-api/pull/89 PR fixes TCP transport
 git+https://github.com/caenrigen/pl-realtime-api@tcp_transport
 numpy
+
+# For settings GUI
+PyQt6

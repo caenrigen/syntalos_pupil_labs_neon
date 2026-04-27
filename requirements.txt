@@ -1,8 +1,7 @@
 # pupil-labs-realtime-api # PyPi package
-# v1.8.0 changed the data types, and in a later commit on `main` they renamed a few parameters
-# git+https://github.com/pupil-labs/pl-realtime-api@80feee74eb2863f59d2abe73570dda13bcde04e2
-# My https://github.com/pupil-labs/pl-realtime-api/pull/89 PR fixes TCP transport
-git+https://github.com/caenrigen/pl-realtime-api@tcp_transport
+# v1.8.0 changed the data types, and in a later commit on `main` they renamed a few parameters.
+# My merged PR https://github.com/pupil-labs/pl-realtime-api/pull/89 fixes TCP transport
+git+https://github.com/pupil-labs/pl-realtime-api@5fa933237ce730a470061f638917d99a970f019b
 numpy
 
 # For settings GUI

@@ -103,13 +103,13 @@ out_imu: syl.OutputPort | None = None
 out_eye_events_simple: syl.OutputPort | None = None  # Only has a few fields
 out_eye_events_complete: syl.OutputPort | None = None  # Has many fields
 
-STREAM_NAME_SCENE = "world"
-STREAM_NAME_EYES = "eyes"
-STREAM_NAME_GAZE = "gaze"
-STREAM_NAME_IMU = "imu"
-STREAM_NAME_EYE_EVENTS = "eye_events"
-STREAM_NAME_EVENTS_COMPLETE = "eye_events_complete"
-STREAM_NAME_EVENTS_SIMPLE = "eye_events_simple"
+STREAM_SCENE = "world"
+STREAM_EYES = "eyes"
+STREAM_GAZE = "gaze"
+STREAM_IMU = "imu"
+STREAM_EYE_EVENTS = "eye_events"
+STREAM_EVENTS_B = "eye_events_complete"
+STREAM_EVENTS_A = "eye_events_simple"
 GAZE_SIGNAL_NAMES = [
     "x",
     "y",
@@ -385,9 +385,7 @@ def submit_float_block(
 
 def process_gaze_datum(gaze_datum: EyestateEyelidDualMonoGazeData) -> None:
     assert STATE.settings is not None
-    STATE.gaze_timestamps_us.append(
-        timestamp_to_us(gaze_datum.timestamp_unix_seconds, STREAM_NAME_GAZE)
-    )
+    STATE.gaze_timestamps_us.append(timestamp_to_us(gaze_datum.timestamp_unix_seconds, STREAM_GAZE))
     STATE.gaze_rows.append(
         [
             # Gaze
@@ -436,9 +434,7 @@ def process_gaze_datum(gaze_datum: EyestateEyelidDualMonoGazeData) -> None:
 
 def process_imu_datum(imu_datum: IMUData) -> None:
     assert STATE.settings is not None
-    STATE.imu_timestamps_us.append(
-        timestamp_to_us(imu_datum.timestamp_unix_seconds, STREAM_NAME_IMU)
-    )
+    STATE.imu_timestamps_us.append(timestamp_to_us(imu_datum.timestamp_unix_seconds, STREAM_IMU))
     STATE.imu_rows.append(
         [
             imu_datum.gyro_data.x,
@@ -463,8 +459,8 @@ def process_imu_datum(imu_datum: IMUData) -> None:
 
 
 def process_eye_event(event: EyeEventData) -> None:
-    rtp_timestamp_us = timestamp_to_us(event.rtp_ts_unix_seconds, STREAM_NAME_EYE_EVENTS)
-    start_time_us = timestamp_ns_to_us(event.start_time_ns, STREAM_NAME_EYE_EVENTS)
+    rtp_timestamp_us = timestamp_to_us(event.rtp_ts_unix_seconds, STREAM_EYE_EVENTS)
+    start_time_us = timestamp_ns_to_us(event.start_time_ns, STREAM_EYE_EVENTS)
     sample_timestamp_us = int(start_time_us)
     if isinstance(event, FixationEventData):
         assert out_eye_events_complete is not None
@@ -476,7 +472,7 @@ def process_eye_event(event: EyeEventData) -> None:
                     float(event.event_type),
                     float(rtp_timestamp_us),
                     start_time_us,
-                    timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
+                    timestamp_ns_to_us(event.end_time_ns, STREAM_EYE_EVENTS),
                     event.start_gaze_x,
                     event.start_gaze_y,
                     event.end_gaze_x,
@@ -501,7 +497,7 @@ def process_eye_event(event: EyeEventData) -> None:
                     float(event.event_type),
                     float(rtp_timestamp_us),
                     start_time_us,
-                    timestamp_ns_to_us(event.end_time_ns, STREAM_NAME_EYE_EVENTS),
+                    timestamp_ns_to_us(event.end_time_ns, STREAM_EYE_EVENTS),
                 ]
             ],
             clear=False,
@@ -528,14 +524,14 @@ def process_eye_event(event: EyeEventData) -> None:
 def submit_scene_frame(frame: VideoFrame) -> None:
     assert out_scene is not None
     STATE.scene_frame_index = submit_video_frame(
-        frame, out_scene, STREAM_NAME_SCENE, STATE.scene_frame_index
+        frame, out_scene, STREAM_SCENE, STATE.scene_frame_index
     )
 
 
 def submit_eyes_frame(frame: VideoFrame) -> None:
     assert out_eyes is not None
     STATE.eyes_frame_index = submit_video_frame(
-        frame, out_eyes, STREAM_NAME_EYES, STATE.eyes_frame_index
+        frame, out_eyes, STREAM_EYES, STATE.eyes_frame_index
     )
 
 
@@ -675,15 +671,15 @@ def cleanup() -> None:
 def register_ports(mlink: syl.SyntalosLink) -> None:
     global out_scene, out_eyes, out_gaze, out_imu, out_eye_events_complete, out_eye_events_simple
 
-    out_scene = mlink.register_output_port(STREAM_NAME_SCENE, "Scene", data_type=syl.DataType.Frame)
-    out_eyes = mlink.register_output_port(STREAM_NAME_EYES, "Eyes", syl.DataType.Frame)
-    out_gaze = mlink.register_output_port(STREAM_NAME_GAZE, "Gaze", syl.DataType.FloatSignalBlock)
-    out_imu = mlink.register_output_port(STREAM_NAME_IMU, "IMU", syl.DataType.FloatSignalBlock)
+    out_scene = mlink.register_output_port(STREAM_SCENE, "Scene", data_type=syl.DataType.Frame)
+    out_eyes = mlink.register_output_port(STREAM_EYES, "Eyes", syl.DataType.Frame)
+    out_gaze = mlink.register_output_port(STREAM_GAZE, "Gaze", syl.DataType.FloatSignalBlock)
+    out_imu = mlink.register_output_port(STREAM_IMU, "IMU", syl.DataType.FloatSignalBlock)
     out_eye_events_complete = mlink.register_output_port(
-        STREAM_NAME_EVENTS_COMPLETE, "Events Complete", syl.DataType.FloatSignalBlock
+        STREAM_EVENTS_B, "Events B", syl.DataType.FloatSignalBlock
     )
     out_eye_events_simple = mlink.register_output_port(
-        STREAM_NAME_EVENTS_SIMPLE, "Events Simple", syl.DataType.FloatSignalBlock
+        STREAM_EVENTS_A, "Events A", syl.DataType.FloatSignalBlock
     )
 
 

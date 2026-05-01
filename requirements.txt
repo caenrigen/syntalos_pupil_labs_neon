@@ -1,7 +1,11 @@
 # pupil-labs-realtime-api # PyPi package
 # v1.8.0 changed the data types, and in a later commit on `main` they renamed a few parameters.
-# My merged PR https://github.com/pupil-labs/pl-realtime-api/pull/89 fixes TCP transport
-git+https://github.com/pupil-labs/pl-realtime-api@5fa933237ce730a470061f638917d99a970f019b
+# My merged PR https://github.com/pupil-labs/pl-realtime-api/pull/89 fixes TCP transport.
+# git+https://github.com/pupil-labs/pl-realtime-api@5fa933237ce730a470061f638917d99a970f019b
+# Neon Companion RTSP Server seems to have a bug that won't be fixed anytime soon.
+# My branch implements a workaround, https://github.com/pupil-labs/pl-realtime-api/pull/90
+git+https://github.com/caenrigen/pl-realtime-api@main
+
 numpy
 
 # For settings GUI

@@ -5,7 +5,7 @@ name = "Pupil Labs Neon"
 description = "Streams data from Pupil Labs Neon glasses."
 icon = "neon.svg"
 
-main = "mod-main.py"
+main = "module.py"
 # will run the module in a dedicated venv with requirements.txt installed
 use_venv = true
 

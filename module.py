@@ -46,6 +46,7 @@ class Settings:
 class State:
     settings: Settings | None = None
     running: bool = False
+    cleanup_requested: bool = False
     settings_dialog: QDialog | None = None
     device: Device | None = None
     loop: asyncio.AbstractEventLoop | None = None
@@ -70,7 +71,6 @@ class State:
 
 
 def clear_state() -> None:
-    # Settings and the asyncio loop should stay persistent across runs.
     STATE.device = None
     STATE.running = False
     STATE.scene_url = ""
@@ -653,6 +653,7 @@ async def cleanup_async() -> None:
 
 
 def cleanup() -> None:
+    STATE.cleanup_requested = False
     loop = STATE.loop
     if loop is None:
         print("No event loop to cleanup, skipping cleanup()")
@@ -689,6 +690,8 @@ def register_ports(mlink: syl.SyntalosLink) -> None:
 
 
 def prepare():
+    if STATE.cleanup_requested:
+        cleanup()
     clear_state()
     close_settings_dialog()
     if STATE.settings is None:
@@ -779,6 +782,9 @@ def event_loop_tick() -> None:
     if App is not None:
         App.processEvents()
 
+    if STATE.cleanup_requested:
+        cleanup()
+
     if not STATE.running:
         return
 
@@ -809,8 +815,8 @@ def event_loop_tick() -> None:
 
 
 def stop() -> None:
-    cleanup()
     STATE.running = False
+    STATE.cleanup_requested = True
 
 
 def load_settings(settings: bytes, _base_dir: Path) -> bool:

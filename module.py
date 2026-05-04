@@ -17,7 +17,6 @@ from pupil_labs.realtime_api import (
     Device,
     FixationEventData,
     FixationOnsetEventData,
-    Network,
     VideoFrame,
     receive_eye_events_data,
     receive_gaze_data,
@@ -194,14 +193,9 @@ def deserialise_settings(settings: bytes):
     return Settings(**json.loads(settings.decode()))  # pyright: ignore[reportAny]
 
 
-def fit_dialog_to_contents(dialog: QDialog) -> None:
-    layout = dialog.layout()
-    if layout is not None:
-        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
-    dialog.adjustSize()
-
-
-def force_tcp_rtsp_url(url: str, audioenable: bool = False) -> str:
+def force_tcp_rtsp_url(url: str | None, audioenable: bool = False) -> str:
+    if url is None:
+        return ""
     # By default it enables the audio
     url = url.replace("audioenable=on", "audioenable=" + ("on" if audioenable else "off"))
     if url.startswith("rtsp://"):
@@ -249,12 +243,12 @@ class Module:
         self.mlink = mlink
         self.app = app
 
-        self.settings: Settings | None = None
+        self.settings = Settings()
         self.running = False
         self.cleanup_requested = False
         self.settings_dialog: QDialog | None = None
         self.device: Device | None = None
-        self.loop: asyncio.AbstractEventLoop | None = None
+        self.loop = asyncio.new_event_loop()
         self.scene_url = ""
         self.eyes_url = ""
         self.gaze_url = ""
@@ -277,8 +271,8 @@ class Module:
         self.register_ports()
 
     def clear_state(self) -> None:
-        self.device = None
         self.running = False
+        self.device = None
         self.scene_url = ""
         self.eyes_url = ""
         self.gaze_url = ""
@@ -298,72 +292,62 @@ class Module:
         self.imu_timestamps_us.clear()
         self.imu_rows.clear()
 
-    def close_settings_dialog(self) -> None:
-        dialog = self.settings_dialog
-        if dialog is not None:
-            _ = dialog.close()
-
-    async def connect_device(self) -> tuple[Device, str, str, str, str, str]:
-        settings = self.settings
-        assert settings is not None
-
-        ip = settings.phone_ip.strip()
-        device: Device | None = None
+    async def connect_device(self):
+        ip = self.settings.phone_ip.strip()
+        if not ip:
+            raise RuntimeError("The IP address of the Android phone must be configured first.")
         try:
-            if ip:
-                device = Device(address=ip, port=settings.phone_port)
-            else:
-                async with Network() as network:
-                    dev_info = await network.wait_for_new_device(settings.discovery_timeout_s)
-                if dev_info is None:
-                    raise RuntimeError("No Neon device found on network")
-                device = Device.from_discovered_device(dev_info)
-
-            status = await device.get_status()
+            self.device = Device(address=ip, port=self.settings.phone_port)
+            status = await self.device.get_status()
             scene_sensor = status.direct_world_sensor()
             eyes_sensor = status.direct_eyes_sensor()
             gaze_sensor = status.direct_gaze_sensor()
             imu_sensor = status.direct_imu_sensor()
             eye_events_sensor = status.direct_eye_events_sensor()
 
-            scene_url = scene_sensor.url if scene_sensor and scene_sensor.connected else None
-            eyes_url = eyes_sensor.url if eyes_sensor and eyes_sensor.connected else None
-            gaze_url = gaze_sensor.url if gaze_sensor and gaze_sensor.connected else None
-            imu_url = imu_sensor.url if imu_sensor and imu_sensor.connected else None
-            eye_events_url = (
-                eye_events_sensor.url if eye_events_sensor and eye_events_sensor.connected else None
+            self.scene_url = (
+                force_tcp_rtsp_url(scene_sensor.url)
+                if scene_sensor and scene_sensor.connected
+                else ""
             )
-            if scene_url is None:
+            self.eyes_url = (
+                force_tcp_rtsp_url(eyes_sensor.url) if eyes_sensor and eyes_sensor.connected else ""
+            )
+            self.gaze_url = (
+                force_tcp_rtsp_url(gaze_sensor.url) if gaze_sensor and gaze_sensor.connected else ""
+            )
+            self.imu_url = (
+                force_tcp_rtsp_url(imu_sensor.url) if imu_sensor and imu_sensor.connected else ""
+            )
+            self.eye_events_url = (
+                force_tcp_rtsp_url(eye_events_sensor.url)
+                if eye_events_sensor and eye_events_sensor.connected
+                else ""
+            )
+
+            if not self.scene_url:
                 raise RuntimeError("Scene camera stream unavailable")
-            if eyes_url is None:
+            if not self.eyes_url:
                 raise RuntimeError("Eyes camera stream unavailable")
-            if gaze_url is None:
+            if not self.gaze_url:
                 raise RuntimeError("Gaze stream unavailable")
-            if imu_url is None:
+            if not self.imu_url:
                 raise RuntimeError("IMU stream unavailable")
-            if eye_events_url is None:
+            if not self.eye_events_url:
                 raise RuntimeError(
-                    "Eye events stream unavailable. Requires Neon Companion 2.9+ with Compute fixations enabled."
+                    "Eye events stream unavailable. Requires Neon Companion 2.9+ with 'Compute fixations' enabled."
                 )
-
-            scene_url = force_tcp_rtsp_url(scene_url)
-            eyes_url = force_tcp_rtsp_url(eyes_url)
-            gaze_url = force_tcp_rtsp_url(gaze_url)
-            imu_url = force_tcp_rtsp_url(imu_url)
-            eye_events_url = force_tcp_rtsp_url(eye_events_url)
-
-            return device, scene_url, eyes_url, gaze_url, imu_url, eye_events_url
         except Exception:
-            if device is not None:
+            if self.device is not None:
                 with contextlib.suppress(Exception):
-                    await device.close()
+                    await self.device.close()
             raise
 
     def timestamp_to_us(self, timestamp_unix_seconds: float, stream_name: str) -> int:
         assert self.offset_us is not None
         ts_us = int(timestamp_unix_seconds * 1e6)
         time_us = ts_us + self.offset_us
-        # From time to time the Neon App on the Android crashes and the frame arrives with negative timestamp
+        # From time to time the Neon App on the Android crashes and/or the frame arrives with negative timestamp.
         if time_us <= 0:
             raise ValueError(
                 f"Non-positive {time_us=} for {stream_name=} ({timestamp_unix_seconds=})"
@@ -397,7 +381,6 @@ class Module:
     ) -> None:
         if not timestamps_us:
             return
-
         block = syl.FloatSignalBlock()
         block.timestamps = np.array(timestamps_us, dtype=np.uint64)
         block.data = np.array(rows, dtype=np.float64)
@@ -407,7 +390,6 @@ class Module:
             rows.clear()
 
     def process_gaze_datum(self, gaze_datum: EyestateEyelidDualMonoGazeData) -> None:
-        assert self.settings is not None
         self.gaze_timestamps_us.append(
             self.timestamp_to_us(gaze_datum.timestamp_unix_seconds, STREAM_GAZE)
         )
@@ -456,8 +438,9 @@ class Module:
             )
 
     def process_imu_datum(self, imu_datum: IMUData) -> None:
-        assert self.settings is not None
-        self.imu_timestamps_us.append(self.timestamp_to_us(imu_datum.timestamp_unix_seconds, STREAM_IMU))
+        self.imu_timestamps_us.append(
+            self.timestamp_to_us(imu_datum.timestamp_unix_seconds, STREAM_IMU)
+        )
         self.imu_rows.append(
             [
                 imu_datum.gyro_data.x,
@@ -570,26 +553,29 @@ class Module:
             submit_func(frame)
             del frame
 
-    def drain_gaze_queue(self, queue: asyncio.Queue[EyestateEyelidDualMonoGazeData]) -> None:
+    def drain_gaze_queue(self) -> None:
         while True:
             try:
-                gaze_datum = queue.get_nowait()
+                assert self.gaze_queue is not None
+                gaze_datum = self.gaze_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             self.process_gaze_datum(gaze_datum)
 
-    def drain_imu_queue(self, queue: asyncio.Queue[IMUData]) -> None:
+    def drain_imu_queue(self) -> None:
         while True:
             try:
-                imu_datum = queue.get_nowait()
+                assert self.imu_queue is not None
+                imu_datum = self.imu_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             self.process_imu_datum(imu_datum)
 
-    def drain_eye_events_queue(self, queue: asyncio.Queue[EyeEventData]) -> None:
+    def drain_eye_events_queue(self) -> None:
         while True:
             try:
-                eye_event = queue.get_nowait()
+                assert self.eye_events_queue is not None
+                eye_event = self.eye_events_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             self.process_eye_event(eye_event)
@@ -605,43 +591,31 @@ class Module:
 
     async def cleanup_async(self) -> None:
         await self.stop_stream_tasks()
-
-        device = self.device
-        if device is None:
+        if self.device is None:
             print("No device to cleanup, skipping device cleanup")
             return
 
-        settings = self.settings
-        if settings is None:
-            print("Settings not set, skipping device cleanup")
-            return
-
-        if settings.companion_recording_enabled:
+        if self.settings.companion_recording_enabled:
             try:
-                await device.recording_stop_and_save()
+                await self.device.recording_stop_and_save()
             except Exception as exc:
                 print(f"Neon cleanup recording control failed: {exc}")
 
         try:
-            await device.close()
+            await self.device.close()
         except Exception as exc:
             print(f"Failed to close Neon device: {exc}")
 
     def cleanup(self) -> None:
         self.cleanup_requested = False
-        loop = self.loop
-        if loop is None:
-            print("No event loop to cleanup, skipping cleanup()")
-            return
-
         try:
-            loop.run_until_complete(self.cleanup_async())
+            self.loop.run_until_complete(self.cleanup_async())
             # Advance the async loop a final bit for all pending tasks to wrap up.
             # This pervents a series of errors being printed when quiting Syntalos.
-            loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_WRAPUP_S))
+            self.loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_WRAPUP_S))
+            print("Cleanup done")
         except Exception as exc:
             print(f"Cleanup failed: {exc.__class__.__name__}({exc})")
-        print("Cleanup done")
 
     # # ################################################################################
     # # Syntalos interface
@@ -669,10 +643,8 @@ class Module:
         if self.cleanup_requested:
             self.cleanup()
         self.clear_state()
-        self.close_settings_dialog()
-        if self.settings is None:
-            # happens when adding the module to the board first time and starting right away
-            self.settings = Settings()
+        if self.settings_dialog is not None:
+            _ = self.settings_dialog.close()
 
         self.out_scene.set_metadata_value("framerate", 30.0)
         self.out_scene.set_metadata_value_size("size", syl.MetaSize(1600, 1200))
@@ -700,30 +672,19 @@ class Module:
         self.out_eye_events_simple.set_metadata_value("time_unit", "microseconds")
         self.out_eye_events_simple.set_metadata_value("data_unit", EYE_EVENTS_SIMPLE_UNITS)
 
-        if self.loop is None:
-            self.loop = asyncio.new_event_loop()
+        self.loop.run_until_complete(self.connect_device())
 
-        device, scene_url, eyes_url, gaze_url, imu_url, eye_events_url = self.loop.run_until_complete(
-            self.connect_device()
-        )
-        self.device = device
-        self.scene_url = scene_url
-        self.eyes_url = eyes_url
-        self.gaze_url = gaze_url
-        self.imu_url = imu_url
-        self.eye_events_url = eye_events_url
         self.scene_queue = asyncio.Queue(maxsize=SCENE_QUEUE_MAX)
         self.eyes_queue = asyncio.Queue(maxsize=EYES_QUEUE_MAX)
-        assert self.settings is not None
         self.gaze_queue = asyncio.Queue(maxsize=max(self.settings.batch_size * 4, GAZE_QUEUE_MIN))
         self.imu_queue = asyncio.Queue(maxsize=max(self.settings.batch_size * 4, IMU_QUEUE_MIN))
         self.eye_events_queue = asyncio.Queue(maxsize=EYE_EVENTS_QUEUE_MAX)
         return True
 
     def start(self) -> None:
-        assert self.loop is not None
+        self.offset_us = -int(time.time() * 1e6)
+
         assert self.device is not None
-        assert self.settings is not None
         assert self.scene_queue is not None
         assert self.eyes_queue is not None
         assert self.gaze_queue is not None
@@ -746,44 +707,29 @@ class Module:
                 name="eye-events-stream",
             ),
         ]
-        self.offset_us = -int(time.time() * 1e6)
+
         if self.settings.companion_recording_enabled:
             _recording_id = self.loop.run_until_complete(self.device.recording_start())
+
         self.running = True
 
     def event_loop_tick(self) -> None:
         self.app.processEvents()
-
         if self.cleanup_requested:
             self.cleanup()
-
         if not self.running:
             return
 
-        loop = self.loop
-        if loop is None:
-            return
-
-        loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_ADVANCE_S))
-
-        scene_queue = self.scene_queue
-        eyes_queue = self.eyes_queue
-        gaze_queue = self.gaze_queue
-        imu_queue = self.imu_queue
-        eye_events_queue = self.eye_events_queue
-
-        assert scene_queue is not None
-        assert eyes_queue is not None
-        assert gaze_queue is not None
-        assert imu_queue is not None
-        assert eye_events_queue is not None
+        self.loop.run_until_complete(asyncio.sleep(ASYNC_LOOP_ADVANCE_S))
 
         self.ensure_stream_tasks_healthy()
-        self.drain_gaze_queue(gaze_queue)
-        self.drain_imu_queue(imu_queue)
-        self.drain_eye_events_queue(eye_events_queue)
-        self.drain_video_queue(scene_queue, self.submit_scene_frame)
-        self.drain_video_queue(eyes_queue, self.submit_eyes_frame)
+        self.drain_gaze_queue()
+        self.drain_imu_queue()
+        self.drain_eye_events_queue()
+        assert self.scene_queue is not None
+        self.drain_video_queue(self.scene_queue, self.submit_scene_frame)
+        assert self.eyes_queue is not None
+        self.drain_video_queue(self.eyes_queue, self.submit_eyes_frame)
 
     def stop(self) -> None:
         self.running = False
@@ -791,21 +737,16 @@ class Module:
 
     def load_settings(self, settings: bytes, _base_dir: Path) -> bool:
         if not settings:
-            if self.settings is None:
-                self.settings = Settings()
             return True
 
         try:
             self.settings = deserialise_settings(settings)
+            return True
         except Exception:
             self.settings = Settings()
             raise
 
-        return True
-
     def save_settings(self, _base_dir: Path) -> bytes:
-        if self.settings is None:
-            self.settings = Settings()
         return serialise_settings(self.settings)
 
     # # ################################################################################
@@ -818,11 +759,6 @@ class Module:
         if self.running or self.mlink.is_running:
             print("Cannot show settings while running")
             return
-
-        if self.settings is None:
-            self.settings = Settings()
-
-        assert self.settings is not None
 
         dialog = self.settings_dialog
         if dialog is not None:
@@ -840,11 +776,12 @@ class Module:
         dialog.companionRecordingCheckBox.setChecked(self.settings.companion_recording_enabled)
 
         def persist_settings() -> None:
-            assert self.settings is not None
             self.settings.phone_ip = dialog.phoneIpLineEdit.text().strip()
             self.settings.phone_port = dialog.phonePortSpinBox.value()
             self.settings.discovery_timeout_s = dialog.discoveryTimeoutSpinBox.value()
-            self.settings.companion_recording_enabled = dialog.companionRecordingCheckBox.isChecked()
+            self.settings.companion_recording_enabled = (
+                dialog.companionRecordingCheckBox.isChecked()
+            )
 
         def cleanup_dialog(_result: int) -> None:
             self.settings_dialog = None
@@ -858,6 +795,13 @@ class Module:
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+
+def fit_dialog_to_contents(dialog: QDialog) -> None:
+    layout = dialog.layout()
+    if layout is not None:
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+    dialog.adjustSize()
 
 
 def main() -> int:

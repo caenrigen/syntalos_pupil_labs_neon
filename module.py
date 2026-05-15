@@ -381,9 +381,9 @@ class Module:
     ) -> None:
         if not timestamps_us:
             return
-        block = syl.FloatSignalBlock()
+        block = syl.SignalBlockF32()
         block.timestamps = np.array(timestamps_us, dtype=np.uint64)
-        block.data = np.array(rows, dtype=np.float64)
+        block.data = np.array(rows, dtype=np.float32)
         out_port.submit(block)
         if clear:
             timestamps_us.clear()
@@ -627,16 +627,16 @@ class Module:
         )
         self.out_eyes = self.mlink.register_output_port(STREAM_EYES, "Eyes", syl.DataType.Frame)
         self.out_gaze = self.mlink.register_output_port(
-            STREAM_GAZE, "Gaze", syl.DataType.FloatSignalBlock
+            STREAM_GAZE, "Gaze", syl.DataType.SignalBlockF32
         )
         self.out_imu = self.mlink.register_output_port(
-            STREAM_IMU, "IMU", syl.DataType.FloatSignalBlock
+            STREAM_IMU, "IMU", syl.DataType.SignalBlockF32
         )
         self.out_eye_events_complete = self.mlink.register_output_port(
-            STREAM_EVENTS_B, "Events B", syl.DataType.FloatSignalBlock
+            STREAM_EVENTS_B, "Events B", syl.DataType.SignalBlockF32
         )
         self.out_eye_events_simple = self.mlink.register_output_port(
-            STREAM_EVENTS_A, "Events A", syl.DataType.FloatSignalBlock
+            STREAM_EVENTS_A, "Events A", syl.DataType.SignalBlockF32
         )
 
     def prepare(self) -> bool:

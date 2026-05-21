@@ -185,11 +185,11 @@ ASYNC_LOOP_WRAPUP_S = 0.200
 UI_FILE_PATH = Path(__file__).resolve().with_name("settings.ui")
 
 
-def serialise_settings(settings: Settings):
+def serialise_settings(settings: Settings) -> bytes:
     return json.dumps(asdict(settings)).encode()
 
 
-def deserialise_settings(settings: bytes):
+def deserialise_settings(settings: bytes) -> Settings:
     return Settings(**json.loads(settings.decode()))  # pyright: ignore[reportAny]
 
 
@@ -269,6 +269,7 @@ class Module:
         self.imu_rows: list[list[float]] = []
 
         self.register_ports()
+        self.register_callbacks()
 
     def clear_state(self) -> None:
         self.running = False
@@ -639,6 +640,14 @@ class Module:
             STREAM_EVENTS_A, "Events A", syl.DataType.SignalBlockF32
         )
 
+    def register_callbacks(self) -> None:
+        self.mlink.on_prepare = self.prepare
+        self.mlink.on_start = self.start
+        self.mlink.on_stop = self.stop
+        self.mlink.on_show_settings = self.show_settings
+        self.mlink.on_save_settings = self.save_settings
+        self.mlink.on_load_settings = self.load_settings
+
     def prepare(self) -> bool:
         if self.cleanup_requested:
             self.cleanup()
@@ -809,14 +818,8 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
     mlink = syl.init_link(rename_process=True)
     mod = Module(mlink, app)
-    mlink.on_prepare = mod.prepare
-    mlink.on_start = mod.start
-    mlink.on_stop = mod.stop
-    mlink.on_show_settings = mod.show_settings
-    mlink.on_save_settings = mod.save_settings
-    mlink.on_load_settings = mod.load_settings
     mlink.await_data_forever(mod.event_loop_tick)
-    if mod.running:
+    if mod.running or mod.cleanup_requested:
         mod.cleanup()
     return 0
 

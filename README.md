@@ -11,9 +11,8 @@ When it happens, it requires to manually close the App on the phone and restart 
 
 ## Connecting to the glasses
 
-The module will try to automatically discover the Neon companion app running on a Smartphone connected to the glasses.
-This can fails on certain networks, you can enter the IP address of the glasses manually in the module settings.
-To find the IP address of the Smartphone running the Neon companion app, open the app on the main screen and press the phone icon under the settings icon.
+Enter the IP address of the phone running the Neon Companion app in the module settings before starting acquisition.
+To find the IP address, open the Companion app on the main screen and press the phone icon under the settings icon.
 
 ## Running in a Virtual Machine
 

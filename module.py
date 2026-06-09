@@ -35,7 +35,6 @@ EyeEventData = FixationEventData | FixationOnsetEventData | BlinkEventData
 class Settings:
     phone_ip: str = ""
     phone_port: int = 8080
-    discovery_timeout_s: float = 8.0
     batch_size: int = 64
     # Controlling the recording start/saving has been flaky
     companion_recording_enabled: bool = False
@@ -781,13 +780,11 @@ class Module:
         fit_dialog_to_contents(dialog)
         dialog.phoneIpLineEdit.setText(self.settings.phone_ip)
         dialog.phonePortSpinBox.setValue(self.settings.phone_port)
-        dialog.discoveryTimeoutSpinBox.setValue(self.settings.discovery_timeout_s)
         dialog.companionRecordingCheckBox.setChecked(self.settings.companion_recording_enabled)
 
         def persist_settings() -> None:
             self.settings.phone_ip = dialog.phoneIpLineEdit.text().strip()
             self.settings.phone_port = dialog.phonePortSpinBox.value()
-            self.settings.discovery_timeout_s = dialog.discoveryTimeoutSpinBox.value()
             self.settings.companion_recording_enabled = (
                 dialog.companionRecordingCheckBox.isChecked()
             )
@@ -797,7 +794,6 @@ class Module:
 
         dialog.phoneIpLineEdit.textChanged.connect(persist_settings)
         dialog.phonePortSpinBox.valueChanged.connect(persist_settings)
-        dialog.discoveryTimeoutSpinBox.valueChanged.connect(persist_settings)
         dialog.companionRecordingCheckBox.checkStateChanged.connect(persist_settings)
         dialog.finished.connect(cleanup_dialog)
 

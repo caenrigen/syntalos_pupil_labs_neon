@@ -45,8 +45,8 @@ STREAM_EYES = "eyes"
 STREAM_GAZE = "gaze"
 STREAM_IMU = "imu"
 STREAM_EYE_EVENTS = "eye_events"
-STREAM_EVENTS_B = "eye_events_complete"
-STREAM_EVENTS_A = "eye_events_simple"
+STREAM_EVENTS_A = "eye_events_a"
+STREAM_EVENTS_B = "eye_events_b"
 GAZE_SIGNAL_NAMES = [
     # Gaze combined
     "x",
@@ -439,7 +439,7 @@ class Module:
         )
         if len(self.gaze_timestamps_us) >= self.settings.batch_size:
             self.submit_float_block(
-                self.out_gaze,
+                self.po_gaze,
                 self.gaze_timestamps_us,
                 self.gaze_rows,
             )
@@ -464,7 +464,7 @@ class Module:
         )
         if len(self.imu_timestamps_us) >= self.settings.batch_size:
             self.submit_float_block(
-                self.out_imu,
+                self.po_imu,
                 self.imu_timestamps_us,
                 self.imu_rows,
             )
@@ -475,7 +475,7 @@ class Module:
         sample_timestamp_us = int(start_time_us)
         if isinstance(event, FixationEventData):
             self.submit_float_block(
-                self.out_eye_events_b,
+                self.po_eye_events_b,
                 [sample_timestamp_us],
                 [
                     [
@@ -499,7 +499,7 @@ class Module:
             )
         elif isinstance(event, BlinkEventData):
             self.submit_float_block(
-                self.out_eye_events_a,
+                self.po_eye_events_a,
                 [sample_timestamp_us],
                 [
                     [
@@ -513,7 +513,7 @@ class Module:
             )
         elif isinstance(event, FixationOnsetEventData):
             self.submit_float_block(
-                self.out_eye_events_a,
+                self.po_eye_events_a,
                 [sample_timestamp_us],
                 [
                     [
@@ -530,12 +530,12 @@ class Module:
 
     def submit_scene_frame(self, frame: VideoFrame) -> None:
         self.scene_frame_index = self.submit_video_frame(
-            frame, self.out_scene, STREAM_SCENE, self.scene_frame_index
+            frame, self.po_scene, STREAM_SCENE, self.scene_frame_index
         )
 
     def submit_eyes_frame(self, frame: VideoFrame) -> None:
         self.eyes_frame_index = self.submit_video_frame(
-            frame, self.out_eyes, STREAM_EYES, self.eyes_frame_index
+            frame, self.po_eyes, STREAM_EYES, self.eyes_frame_index
         )
 
     def ensure_stream_tasks_healthy(self) -> None:
@@ -629,21 +629,21 @@ class Module:
     # # ################################################################################
 
     def register_ports(self) -> None:
-        self.out_scene = self.mlink.register_output_port(
+        self.po_scene = self.mlink.register_output_port(
             STREAM_SCENE, "Scene", data_type=syl.DataType.Frame
         )
-        self.out_eyes = self.mlink.register_output_port(STREAM_EYES, "Eyes", syl.DataType.Frame)
-        self.out_gaze = self.mlink.register_output_port(
+        self.po_eyes = self.mlink.register_output_port(STREAM_EYES, "Eyes", syl.DataType.Frame)
+        self.po_gaze = self.mlink.register_output_port(
             STREAM_GAZE, "Gaze", syl.DataType.SignalBlockF32
         )
-        self.out_imu = self.mlink.register_output_port(
+        self.po_imu = self.mlink.register_output_port(
             STREAM_IMU, "IMU", syl.DataType.SignalBlockF32
         )
-        self.out_eye_events_b = self.mlink.register_output_port(
-            STREAM_EVENTS_B, "Events B", syl.DataType.SignalBlockF32
-        )
-        self.out_eye_events_a = self.mlink.register_output_port(
+        self.po_eye_events_a = self.mlink.register_output_port(
             STREAM_EVENTS_A, "Events A", syl.DataType.SignalBlockF32
+        )
+        self.po_eye_events_b = self.mlink.register_output_port(
+            STREAM_EVENTS_B, "Events B", syl.DataType.SignalBlockF32
         )
 
     def register_callbacks(self) -> None:
@@ -661,27 +661,35 @@ class Module:
         if self.settings_dialog is not None:
             _ = self.settings_dialog.close()
 
-        self.out_scene.set_metadata_value("framerate", 30.0)
-        self.out_scene.set_metadata_value_size("size", syl.MetaSize(1600, 1200))
+        self.po_scene.set_metadata_value("framerate", 30.0)
+        self.po_scene.set_metadata_value_size("size", syl.MetaSize(1600, 1200))
 
-        self.out_eyes.set_metadata_value("framerate", 200.0)
-        self.out_eyes.set_metadata_value_size("size", syl.MetaSize(384, 192))
+        self.po_eyes.set_metadata_value("framerate", 200.0)
+        self.po_eyes.set_metadata_value_size("size", syl.MetaSize(384, 192))
 
-        self.out_gaze.set_metadata_value("signal_names", GAZE_SIGNAL_NAMES)
-        self.out_gaze.set_metadata_value("time_unit", "microseconds")
-        self.out_gaze.set_metadata_value("data_unit", GAZE_UNITS)
+        self.po_gaze.set_metadata_value("signal_names", GAZE_SIGNAL_NAMES)
+        self.po_gaze.set_metadata_value("time_unit", "microseconds")
+        # Syntalos does not support per-channel units.
+        # https://github.com/syntalos/syntalos/issues/169
+        self.po_gaze.set_metadata_value("data_unit", "a.u.")
 
-        self.out_imu.set_metadata_value("signal_names", IMU_SIGNAL_NAMES)
-        self.out_imu.set_metadata_value("time_unit", "microseconds")
-        self.out_imu.set_metadata_value("data_unit", IMU_UNITS)
+        self.po_imu.set_metadata_value("signal_names", IMU_SIGNAL_NAMES)
+        self.po_imu.set_metadata_value("time_unit", "microseconds")
+        # Syntalos does not support per-channel units.
+        # https://github.com/syntalos/syntalos/issues/169
+        self.po_imu.set_metadata_value("data_unit", "a.u.")
 
-        self.out_eye_events_b.set_metadata_value("signal_names", EYE_EVENTS_B_SIGNAL_NAMES)
-        self.out_eye_events_b.set_metadata_value("time_unit", "microseconds")
-        self.out_eye_events_b.set_metadata_value("data_unit", EYE_EVENTS_B_UNITS)
+        self.po_eye_events_b.set_metadata_value("signal_names", EYE_EVENTS_B_SIGNAL_NAMES)
+        self.po_eye_events_b.set_metadata_value("time_unit", "microseconds")
+        # Syntalos does not support per-channel units.
+        # https://github.com/syntalos/syntalos/issues/169
+        self.po_eye_events_b.set_metadata_value("data_unit", "a.u.")
 
-        self.out_eye_events_a.set_metadata_value("signal_names", EYE_EVENTS_A_SIGNAL_NAMES)
-        self.out_eye_events_a.set_metadata_value("time_unit", "microseconds")
-        self.out_eye_events_a.set_metadata_value("data_unit", EYE_EVENTS_A_UNITS)
+        self.po_eye_events_a.set_metadata_value("signal_names", EYE_EVENTS_A_SIGNAL_NAMES)
+        self.po_eye_events_a.set_metadata_value("time_unit", "microseconds")
+        # Syntalos does not support per-channel units.
+        # https://github.com/syntalos/syntalos/issues/169
+        self.po_eye_events_a.set_metadata_value("data_unit", "a.u.")
 
         self.loop.run_until_complete(self.connect_device())
 

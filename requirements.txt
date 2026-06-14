@@ -4,7 +4,7 @@
 # git+https://github.com/pupil-labs/pl-realtime-api@5fa933237ce730a470061f638917d99a970f019b
 # Neon Companion RTSP Server seems to have a bug that won't be fixed anytime soon.
 # My branch implements a workaround, https://github.com/pupil-labs/pl-realtime-api/pull/90
-git+https://github.com/caenrigen/pl-realtime-api@main
+git+https://github.com/innovation-lab-emc/pl-realtime-api@main
 
 numpy
 

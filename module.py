@@ -136,7 +136,7 @@ IMU_UNITS = [
     "a.u.",
     "a.u.",
 ]
-EYE_EVENTS_COMPLETE_SIGNAL_NAMES = [
+EYE_EVENTS_B_SIGNAL_NAMES = [
     "event_type",
     "rtp_timestamp_us",
     "start_time_us",
@@ -152,7 +152,7 @@ EYE_EVENTS_COMPLETE_SIGNAL_NAMES = [
     "mean_velocity",
     "max_velocity",
 ]
-EYE_EVENTS_COMPLETE_UNITS = [
+EYE_EVENTS_B_UNITS = [
     "a.u.",
     "microseconds",
     "microseconds",
@@ -168,13 +168,13 @@ EYE_EVENTS_COMPLETE_UNITS = [
     "a.u.",
     "a.u.",
 ]
-EYE_EVENTS_SIMPLE_SIGNAL_NAMES = [
+EYE_EVENTS_A_SIGNAL_NAMES = [
     "event_type",
     "rtp_timestamp_us",
     "start_time_us",
     "end_time_us",
 ]
-EYE_EVENTS_SIMPLE_UNITS = [
+EYE_EVENTS_A_UNITS = [
     "a.u.",
     "microseconds",
     "microseconds",
@@ -475,7 +475,7 @@ class Module:
         sample_timestamp_us = int(start_time_us)
         if isinstance(event, FixationEventData):
             self.submit_float_block(
-                self.out_eye_events_complete,
+                self.out_eye_events_b,
                 [sample_timestamp_us],
                 [
                     [
@@ -499,7 +499,7 @@ class Module:
             )
         elif isinstance(event, BlinkEventData):
             self.submit_float_block(
-                self.out_eye_events_simple,
+                self.out_eye_events_a,
                 [sample_timestamp_us],
                 [
                     [
@@ -513,7 +513,7 @@ class Module:
             )
         elif isinstance(event, FixationOnsetEventData):
             self.submit_float_block(
-                self.out_eye_events_simple,
+                self.out_eye_events_a,
                 [sample_timestamp_us],
                 [
                     [
@@ -639,10 +639,10 @@ class Module:
         self.out_imu = self.mlink.register_output_port(
             STREAM_IMU, "IMU", syl.DataType.SignalBlockF32
         )
-        self.out_eye_events_complete = self.mlink.register_output_port(
+        self.out_eye_events_b = self.mlink.register_output_port(
             STREAM_EVENTS_B, "Events B", syl.DataType.SignalBlockF32
         )
-        self.out_eye_events_simple = self.mlink.register_output_port(
+        self.out_eye_events_a = self.mlink.register_output_port(
             STREAM_EVENTS_A, "Events A", syl.DataType.SignalBlockF32
         )
 
@@ -675,17 +675,13 @@ class Module:
         self.out_imu.set_metadata_value("time_unit", "microseconds")
         self.out_imu.set_metadata_value("data_unit", IMU_UNITS)
 
-        self.out_eye_events_complete.set_metadata_value(
-            "signal_names", EYE_EVENTS_COMPLETE_SIGNAL_NAMES
-        )
-        self.out_eye_events_complete.set_metadata_value("time_unit", "microseconds")
-        self.out_eye_events_complete.set_metadata_value("data_unit", EYE_EVENTS_COMPLETE_UNITS)
+        self.out_eye_events_b.set_metadata_value("signal_names", EYE_EVENTS_B_SIGNAL_NAMES)
+        self.out_eye_events_b.set_metadata_value("time_unit", "microseconds")
+        self.out_eye_events_b.set_metadata_value("data_unit", EYE_EVENTS_B_UNITS)
 
-        self.out_eye_events_simple.set_metadata_value(
-            "signal_names", EYE_EVENTS_SIMPLE_SIGNAL_NAMES
-        )
-        self.out_eye_events_simple.set_metadata_value("time_unit", "microseconds")
-        self.out_eye_events_simple.set_metadata_value("data_unit", EYE_EVENTS_SIMPLE_UNITS)
+        self.out_eye_events_a.set_metadata_value("signal_names", EYE_EVENTS_A_SIGNAL_NAMES)
+        self.out_eye_events_a.set_metadata_value("time_unit", "microseconds")
+        self.out_eye_events_a.set_metadata_value("data_unit", EYE_EVENTS_A_UNITS)
 
         self.loop.run_until_complete(self.connect_device())
 

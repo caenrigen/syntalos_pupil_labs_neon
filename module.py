@@ -48,9 +48,11 @@ STREAM_EYE_EVENTS = "eye_events"
 STREAM_EVENTS_B = "eye_events_complete"
 STREAM_EVENTS_A = "eye_events_simple"
 GAZE_SIGNAL_NAMES = [
+    # Gaze combined
     "x",
     "y",
     "worn",
+    # Left eye
     "pupil_diameter_left",
     "eyeball_center_left_x",
     "eyeball_center_left_y",
@@ -58,6 +60,7 @@ GAZE_SIGNAL_NAMES = [
     "optical_axis_left_x",
     "optical_axis_left_y",
     "optical_axis_left_z",
+    # Right eye
     "pupil_diameter_right",
     "eyeball_center_right_x",
     "eyeball_center_right_y",
@@ -65,14 +68,18 @@ GAZE_SIGNAL_NAMES = [
     "optical_axis_right_x",
     "optical_axis_right_y",
     "optical_axis_right_z",
+    # Left eye lid
     "eyelid_angle_top_left",
     "eyelid_angle_bottom_left",
     "eyelid_aperture_left",
+    # Right eye lid
     "eyelid_angle_top_right",
     "eyelid_angle_bottom_right",
     "eyelid_aperture_right",
+    # Gaze left
     "mono_left_x",
     "mono_left_y",
+    # Gaze right
     "mono_right_x",
     "mono_right_y",
 ]
